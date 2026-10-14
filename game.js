@@ -407,6 +407,7 @@
       }
       if (event.type === "gold") {
         dirty = true;
+        if (event.value > 0) floaters.push({ x: event.x, y: event.y - 15, text: `+${event.value}`, color: "#f4c46c", life: 0.75 });
         burst(event.x, event.y, "#f4c46c", 4, 65);
         tone(820, 0.055, 0.018, "sine", 1200);
       }

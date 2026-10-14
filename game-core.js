@@ -10,6 +10,7 @@
   const WIDTH = 1440;
   const HEIGHT = 900;
   const MAX_GOLD = 1000000000;
+  const BASE_ALIEN_STATS = Object.freeze({ hp: 26, speed: 61, damage: 8 });
   const BOSS_INTERVAL = 15;
   const CHICKEN_SPAWN_CHANCE = 0.2;
   const CHICKEN_TRIGGER_DISTANCE = 90;
@@ -85,14 +86,24 @@
 
   function waveSettings(wave) {
     const difficulty = Math.max(0, wave - 1);
+    const hp = Math.min(Number.MAX_SAFE_INTEGER, Math.round(BASE_ALIEN_STATS.hp * Math.pow(1.3, difficulty)));
+    const speed = BASE_ALIEN_STATS.speed + difficulty * 6;
+    const damage = Math.min(Number.MAX_SAFE_INTEGER, Math.round(BASE_ALIEN_STATS.damage * Math.pow(1.2, difficulty)));
     return {
       count: Math.min(120, 8 + wave * 4),
-      hp: Math.round(26 * Math.pow(1.17, Math.min(difficulty, 90))),
-      speed: Math.min(135, 61 + difficulty * 3),
-      damage: 8 + Math.min(difficulty, 200) * 1.4,
+      hp,
+      speed,
+      damage,
       spawnInterval: Math.max(0.17, 0.64 - difficulty * 0.028),
-      gold: 1 + Math.min(20, Math.floor(difficulty / 3)),
+      gold: enemyGold({ maxHp: hp, speed, damage }),
     };
+  }
+
+  function enemyGold(enemy) {
+    const strength = enemy.maxHp / BASE_ALIEN_STATS.hp
+      * Math.max(1, enemy.speed / BASE_ALIEN_STATS.speed)
+      * Math.max(1, enemy.damage / BASE_ALIEN_STATS.damage);
+    return Math.min(MAX_GOLD, Math.max(1, Math.ceil(2 * Math.sqrt(strength))));
   }
 
   function segmentCircleHit(x1, y1, x2, y2, cx, cy, radius) {
@@ -257,7 +268,7 @@
       if (enemy.hp <= 0) return;
       enemy.hp = 0;
       this.kills += 1;
-      const value = this.settings.gold + Math.floor(this.random() * 3) + (enemy.type === "brute" ? 4 : 0);
+      const value = enemyGold(enemy);
       this.pickups.push({ kind: "gold", x: enemy.x, y: enemy.y, value, age: 0, magnetized: false });
       if (this.random() < 0.065) this.pickups.push({ kind: "health", x: enemy.x + 12, y: enemy.y + 10, age: 0 });
       this.events.push({ type: "kill", x: enemy.x, y: enemy.y, color: enemy.color, radius: enemy.radius });
@@ -463,5 +474,5 @@
     }
   }
 
-  return { WIDTH, HEIGHT, MAX_GOLD, BOSS_INTERVAL, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, waveSettings, segmentCircleHit, Game };
+  return { WIDTH, HEIGHT, MAX_GOLD, BASE_ALIEN_STATS, BOSS_INTERVAL, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, waveSettings, enemyGold, segmentCircleHit, Game };
 });

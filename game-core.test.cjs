@@ -320,6 +320,136 @@ test("waves get stronger and advance after all aliens are killed", () => {
   assert.ok(game.enemies.length > 0);
 });
 
+test("wave 1 keeps its original health, movement, attack, and spawn pressure", () => {
+  const settings = Core.waveSettings(1);
+  assert.equal(settings.hp, 26);
+  assert.equal(settings.speed, 61);
+  assert.equal(settings.damage, 8);
+  assert.equal(settings.count, 12);
+  assert.equal(settings.spawnInterval, 0.64);
+  assert.equal(settings.gold, 2);
+});
+
+test("health, speed, attack, and normal-alien gold increase every wave with a steeper curve", () => {
+  let previous = Core.waveSettings(1);
+  for (let wave = 2; wave <= 60; wave += 1) {
+    const current = Core.waveSettings(wave);
+    assert.ok(current.hp > previous.hp, `Health did not increase at wave ${wave}`);
+    assert.ok(current.speed > previous.speed, `Speed did not increase at wave ${wave}`);
+    assert.ok(current.damage > previous.damage, `Attack did not increase at wave ${wave}`);
+    assert.ok(current.gold > previous.gold, `Gold did not increase at wave ${wave}`);
+    assert.ok(current.hp > Math.round(26 * Math.pow(1.17, Math.min(wave - 1, 90))));
+    assert.ok(current.speed > Math.min(135, 61 + (wave - 1) * 3));
+    assert.ok(current.damage > 8 + Math.min(wave - 1, 200) * 1.4);
+    previous = current;
+  }
+  assert.deepEqual(
+    [2, 5, 10].map(wave => {
+      const { hp, speed, damage, gold } = Core.waveSettings(wave);
+      return { hp, speed, damage, gold };
+    }),
+    [
+      { hp: 34, speed: 67, damage: 10, gold: 3 },
+      { hp: 74, speed: 85, damage: 17, gold: 6 },
+      { hp: 276, speed: 115, damage: 41, gold: 21 },
+    ],
+  );
+});
+
+test("stronger enemy types drop higher-value gold using their actual stats", () => {
+  const rewards = {};
+  for (const [name, wave, roll, boss] of [
+    ["drone", 1, 0.5, false],
+    ["chicken", 1, 0.9, false],
+    ["boss", 1, 0.5, true],
+    ["wave4drone", 4, 0.5, false],
+    ["brute", 4, 0.1, false],
+  ]) {
+    const game = startedGame();
+    game.beginWave(wave);
+    game.random = () => roll;
+    game.spawnEnemy(boss);
+    const enemy = game.enemies[0];
+    game.killEnemy(enemy);
+    rewards[name] = game.pickups.find(pickup => pickup.kind === "gold").value;
+    assert.equal(rewards[name], Core.enemyGold(enemy));
+  }
+  assert.equal(rewards.drone, 2);
+  assert.equal(rewards.chicken, 4);
+  assert.equal(rewards.boss, 18);
+  assert.equal(rewards.wave4drone, 5);
+  assert.equal(rewards.brute, 10);
+  assert.ok(rewards.boss > rewards.chicken);
+  assert.ok(rewards.chicken > rewards.drone);
+  assert.ok(rewards.brute > rewards.wave4drone);
+});
+
+test("health, speed, and attack buffs each increase gold rewards", () => {
+  const base = { maxHp: 26, speed: 61, damage: 8 };
+  const reward = Core.enemyGold(base);
+  assert.ok(Core.enemyGold({ ...base, maxHp: 52 }) > reward);
+  assert.ok(Core.enemyGold({ ...base, speed: 122 }) > reward);
+  assert.ok(Core.enemyGold({ ...base, damage: 16 }) > reward);
+});
+
+test("wounded enemies retain their reward even if the current wave changes", () => {
+  const game = startedGame();
+  game.beginWave(1);
+  game.spawnEnemy();
+  const enemy = game.enemies[0];
+  game.hitEnemy(enemy, enemy.hp - 1);
+  assert.equal(enemy.hp, 1);
+  game.beginWave(10);
+  game.killEnemy(enemy);
+  game.killEnemy(enemy);
+  const gold = game.pickups.filter(pickup => pickup.kind === "gold");
+  assert.equal(gold.length, 1);
+  assert.equal(gold[0].value, 2);
+  assert.equal(game.kills, 1);
+});
+
+test("chicken chain kills award full strength-based rewards that can be collected", () => {
+  const { game, chicken } = chickenEncounter(260);
+  game.spawnEnemy();
+  const second = game.enemies.at(-1);
+  second.x = chicken.x + 100;
+  second.y = chicken.y;
+  game.killEnemy(chicken);
+  assert.equal(game.kills, 2);
+  assert.deepEqual(game.pickups.filter(pickup => pickup.kind === "gold").map(pickup => pickup.value), [4, 4]);
+  game.stats.pickup = Core.WIDTH;
+  for (let i = 0; i < 30; i += 1) game.update(0.1);
+  assert.equal(game.profile.gold, 8);
+  assert.equal(game.coins, 8);
+  assert.equal(Core.isValidProfile(game.profile), true);
+});
+
+test("high-value gold drops respect the wallet limit and remain valid save data", () => {
+  const profile = Core.createProfile();
+  profile.gold = Core.MAX_GOLD - 1;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnEnemy(true);
+  const boss = game.enemies[0];
+  boss.x = game.player.x;
+  boss.y = game.player.y;
+  game.killEnemy(boss);
+  assert.equal(game.pickups[0].value, 18);
+  game.update(1 / 60);
+  assert.equal(profile.gold, Core.MAX_GOLD);
+  assert.equal(game.coins, 1);
+  assert.equal(Core.isValidProfile(profile), true);
+});
+
+test("extreme wave stats and rewards remain finite and currency stays bounded", () => {
+  const settings = Core.waveSettings(10000);
+  assert.ok(Number.isFinite(settings.hp));
+  assert.ok(Number.isFinite(settings.speed));
+  assert.ok(Number.isFinite(settings.damage));
+  assert.ok(Number.isInteger(settings.gold));
+  assert.equal(settings.gold, Core.MAX_GOLD);
+});
+
 test("bosses spawn at 15, 30, and 45 seconds, never before the first interval", () => {
   assert.equal(Core.BOSS_INTERVAL, 15);
   const game = startedGame();
