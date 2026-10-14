@@ -39,14 +39,15 @@
   const FIREBALL_LIFETIME = 4;
   const UPGRADES = Object.freeze({
     damage: { name: "Bullet damage", description: "Make every shot count.", baseCost: 25, maxLevel: 25 },
-    fireRate: { name: "Fire rate", description: "Put more rounds downrange.", baseCost: 30, maxLevel: 15 },
+    fireRate: { name: "Fire rate", description: "Put more rounds downrange.", baseCost: 30, maxLevel: 25 },
+    projectileSpeed: { name: "Projectile speed", description: "Make your bullets reach enemies faster.", baseCost: 50, maxLevel: 15 },
     range: { name: "Weapon range", description: "Engage enemies from farther away.", baseCost: 25, maxLevel: 15 },
     speed: { name: "Run speed", description: "Stay ahead of the swarm.", baseCost: 25, maxLevel: 12 },
     hp: { name: "Max health", description: "Reinforce your combat suit.", baseCost: 25, maxLevel: 25 },
     healthRegen: { name: "Health regeneration", description: "Restore health automatically each second.", baseCost: 100, maxLevel: 10 },
     pickup: { name: "Gold pickup radius", description: "Pull in coins from farther away.", baseCost: 20, maxLevel: 15 },
     critChance: { name: "Crit Chance %", description: "Give each bullet a chance to deal double damage.", baseCost: 500, maxLevel: 10 },
-    bullets: { name: "Dual bullets", description: "Upgrade each shot to two, then three full-damage bullets.", baseCost: 2500, costMultiplier: 3, maxLevel: 2 },
+    bullets: { name: "Dual bullets", description: "Make each gun fire two full-damage bullets, four total.", baseCost: 2500, maxLevel: 1 },
     wavePickup: { name: "Wave gold collection", description: "Collect all remaining gold when you clear a wave.", baseCost: 2500, maxLevel: 1 },
   });
 
@@ -56,7 +57,7 @@
     return {
       version: 1,
       gold: 0,
-      levels: { damage: 0, fireRate: 0, range: 0, speed: 0, hp: 0, healthRegen: 0, pickup: 0, critChance: 0, bullets: 0, wavePickup: 0 },
+      levels: { damage: 0, fireRate: 0, projectileSpeed: 0, range: 0, speed: 0, hp: 0, healthRegen: 0, pickup: 0, critChance: 0, bullets: 0, wavePickup: 0 },
       wavePickupEnabled: true,
       bestWave: 0,
       bestKills: 0,
@@ -67,11 +68,13 @@
 
   function migrateProfile(profile) {
     if (profile?.version !== 1 || !profile.levels || typeof profile.levels !== "object") return profile;
-    const missing = ["range", "bullets", "wavePickup", "critChance", "healthRegen"].filter(key => !Object.hasOwn(profile.levels, key));
+    const missing = ["range", "bullets", "wavePickup", "critChance", "healthRegen", "projectileSpeed"].filter(key => !Object.hasOwn(profile.levels, key));
     const missingToggle = !Object.hasOwn(profile, "wavePickupEnabled");
-    if (missing.length === 0 && !missingToggle) return profile;
+    const legacyBulletTier = profile.levels.bullets === 2;
+    if (missing.length === 0 && !missingToggle && !legacyBulletTier) return profile;
     const levels = { ...profile.levels };
     for (const key of missing) levels[key] = 0;
+    if (legacyBulletTier) levels.bullets = 1;
     return { ...profile, levels, ...(missingToggle ? { wavePickupEnabled: true } : {}) };
   }
 
@@ -94,6 +97,7 @@
     return {
       damage: 18 + level.damage * 6,
       fireRate: 2.1 * Math.pow(1.12, level.fireRate),
+      projectileSpeed: 1080 + level.projectileSpeed * 20,
       range: 360 + level.range * 40,
       speed: 245 + level.speed * 16,
       hp: 100 + level.hp * 20,
@@ -281,14 +285,15 @@
       if (isBoss || finalBoss) this.events.push({ type: "boss", finalBoss });
     }
 
-    closestEnemy() {
+    closestEnemy(origin = this.player) {
       let nearest = null;
       let distance = Infinity;
       const maxDistance = this.stats.range ** 2;
       for (const enemy of this.enemies) {
         if (enemy.hp <= 0) continue;
-        const squared = (enemy.x - this.player.x) ** 2 + (enemy.y - this.player.y) ** 2;
-        if (squared <= maxDistance && squared < distance) {
+        const inRange = (enemy.x - this.player.x) ** 2 + (enemy.y - this.player.y) ** 2 <= maxDistance;
+        const squared = (enemy.x - origin.x) ** 2 + (enemy.y - origin.y) ** 2;
+        if (inRange && squared < distance) {
           nearest = enemy;
           distance = squared;
         }
@@ -296,24 +301,48 @@
       return nearest;
     }
 
-    shoot(target) {
-      const angle = Math.atan2(target.y - this.player.y, target.x - this.player.x);
-      this.player.angle = angle;
-      const offset = Math.min(29, Math.hypot(target.x - this.player.x, target.y - this.player.y));
-      const dx = Math.cos(angle);
-      const dy = Math.sin(angle);
-      for (let i = 0; i < this.stats.bullets; i += 1) {
-        const lane = (i - (this.stats.bullets - 1) / 2) * 10;
-        const x = this.player.x + dx * offset - dy * lane;
-        const y = this.player.y + dy * offset + dx * lane;
-        // Side-by-side barrels must still stop inside the circular weapon range.
-        const remainingRange = Math.sqrt(this.stats.range ** 2 - lane ** 2) - offset;
-        const critical = this.stats.critChance > 0 && this.random() < this.stats.critChance / 100;
-        this.bullets.push({ x, y, prevX: x, prevY: y, vx: dx * 1080, vy: dy * 1080, life: 2, remainingRange, damage: this.stats.damage * (critical ? CRIT_DAMAGE_MULTIPLIER : 1), critical });
-        this.bulletsFired += 1;
+    getGunPoses() {
+      const p = this.player;
+      const dx = Math.cos(p.angle);
+      const dy = Math.sin(p.angle);
+      const active = this.stats && (this.phase === "running" || this.phase === "paused");
+      return [-1, 1].map((side, index) => {
+        const x = p.x + dx * 4 - dy * side * 16;
+        const y = p.y + dy * 4 + dx * side * 16;
+        const target = active ? this.closestEnemy({ x, y }) : null;
+        const angle = target ? Math.atan2(target.y - y, target.x - x) : p.angle;
+        return { index, x, y, angle, target, muzzleFlash: p.muzzleFlash };
+      });
+    }
+
+    shoot(target = null) {
+      if (target) this.player.angle = Math.atan2(target.y - this.player.y, target.x - this.player.x);
+      let fired = false;
+      for (const gun of this.getGunPoses()) {
+        const aim = target || gun.target;
+        if (!aim) continue;
+        const angle = Math.atan2(aim.y - gun.y, aim.x - gun.x);
+        const offset = Math.min(29, Math.hypot(aim.x - gun.x, aim.y - gun.y));
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
+        for (let i = 0; i < this.stats.bullets; i += 1) {
+          const lane = (i - (this.stats.bullets - 1) / 2) * 10;
+          const x = gun.x + dx * offset - dy * lane;
+          const y = gun.y + dy * offset + dx * lane;
+          // Clip rays from both offset guns to the soldier's shared range circle.
+          const forward = (x - this.player.x) * dx + (y - this.player.y) * dy;
+          const sideways = (x - this.player.x) * dy - (y - this.player.y) * dx;
+          const remainingRange = Math.sqrt(this.stats.range ** 2 - sideways ** 2) - forward;
+          const critical = this.stats.critChance > 0 && this.random() < this.stats.critChance / 100;
+          this.bullets.push({ x, y, prevX: x, prevY: y, vx: dx * this.stats.projectileSpeed, vy: dy * this.stats.projectileSpeed, life: 2, remainingRange, damage: this.stats.damage * (critical ? CRIT_DAMAGE_MULTIPLIER : 1), critical, gunIndex: gun.index });
+          this.bulletsFired += 1;
+        }
+        fired = true;
       }
-      this.player.muzzleFlash = 0.065;
-      this.events.push({ type: "shot" });
+      if (fired) {
+        this.player.muzzleFlash = 0.065;
+        this.events.push({ type: "shot" });
+      }
     }
 
     shootFireball(enemy) {
@@ -555,7 +584,7 @@
       if (target) {
         p.angle = Math.atan2(target.y - p.y, target.x - p.x);
         if (this.fireTimer <= 0) {
-          this.shoot(target);
+          this.shoot();
           this.fireTimer += 1 / this.stats.fireRate;
         }
       } else {

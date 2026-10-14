@@ -126,12 +126,160 @@ test("old saves gain new level-zero upgrades without losing or mutating progress
   const original = JSON.stringify(oldSave);
   const migrated = Core.migrateProfile(oldSave);
   assert.equal(JSON.stringify(oldSave), original);
-  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0, bullets: 0, wavePickup: 0, critChance: 0, healthRegen: 0 }, wavePickupEnabled: true });
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0, bullets: 0, wavePickup: 0, critChance: 0, healthRegen: 0, projectileSpeed: 0 }, wavePickupEnabled: true });
   assert.equal(Core.isValidProfile(migrated), true);
   assert.equal(Core.getStats(migrated).range, 360);
   assert.equal(Core.getStats(migrated).bullets, 1);
   assert.equal(Core.getStats(migrated).wavePickup, 0);
   assert.equal(Core.migrateProfile(migrated), migrated);
+});
+
+test("fire rate supports twenty-five levels with the existing pricing and twelve-percent scaling", () => {
+  const profile = Core.createProfile();
+  profile.gold = 10000000;
+  assert.equal(Core.UPGRADES.fireRate.maxLevel, 25);
+  for (let level = 1; level <= 25; level += 1) {
+    const cost = Math.ceil(30 * Math.pow(1.38, level - 1));
+    assert.equal(Core.upgradeCost(profile, "fireRate"), cost);
+    assert.deepEqual(Core.buyUpgrade(profile, "fireRate"), { success: true, cost });
+    assert.equal(Core.getStats(profile).fireRate, 2.1 * Math.pow(1.12, level));
+  }
+  assert.equal(Core.upgradeCost(profile, "fireRate"), null);
+  const maxed = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "fireRate").success, false);
+  assert.equal(JSON.stringify(profile), maxed);
+  assert.equal(Core.isValidProfile(profile), true);
+  assert.equal(Core.isValidProfile({ ...profile, levels: { ...profile.levels, fireRate: 26 } }), false);
+});
+
+test("old saves retain level-fifteen fire rate and gain base projectile speed without mutation", () => {
+  const oldSave = Core.createProfile();
+  delete oldSave.levels.projectileSpeed;
+  oldSave.gold = 100000;
+  oldSave.levels.fireRate = 15;
+  oldSave.levels.critChance = 4;
+  oldSave.levels.healthRegen = 3;
+  oldSave.levels.bullets = 2;
+  oldSave.levels.wavePickup = 1;
+  oldSave.wavePickupEnabled = false;
+  oldSave.bestWave = 13;
+  const original = JSON.stringify(oldSave);
+  const migrated = Core.migrateProfile(oldSave);
+  assert.equal(JSON.stringify(oldSave), original);
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, projectileSpeed: 0, bullets: 1 } });
+  assert.equal(Core.getStats(migrated).projectileSpeed, 1080);
+  assert.equal(Core.upgradeCost(migrated, "fireRate"), Math.ceil(30 * Math.pow(1.38, 15)));
+  assert.equal(Core.isValidProfile(migrated), true);
+  assert.equal(Core.migrateProfile(migrated), migrated);
+  for (const level of [-1, 16, 0.5, null, "1", true]) {
+    const invalid = { ...migrated, levels: { ...migrated.levels, projectileSpeed: level } };
+    assert.equal(Core.migrateProfile(invalid), invalid);
+    assert.equal(Core.isValidProfile(invalid), false);
+  }
+});
+
+test("projectile speed costs fifty gold and adds twenty per level from 1080 to 1380", () => {
+  const profile = Core.createProfile();
+  const baseline = Core.getStats(profile);
+  assert.equal(baseline.projectileSpeed, 1080);
+  assert.equal(Core.upgradeCost(profile, "projectileSpeed"), 50);
+  profile.gold = 49;
+  const before = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "projectileSpeed").success, false);
+  assert.equal(JSON.stringify(profile), before);
+  profile.gold = 100000;
+  for (let level = 1; level <= 15; level += 1) {
+    const cost = Math.ceil(50 * Math.pow(1.38, level - 1));
+    const gold = profile.gold;
+    assert.deepEqual(Core.buyUpgrade(profile, "projectileSpeed"), { success: true, cost });
+    assert.equal(profile.gold, gold - cost);
+    assert.deepEqual(Core.getStats(profile), { ...baseline, projectileSpeed: 1080 + level * 20 });
+  }
+  assert.equal(Core.getStats(profile).projectileSpeed, 1380);
+  assert.equal(Core.upgradeCost(profile, "projectileSpeed"), null);
+  const maxed = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "projectileSpeed").success, false);
+  assert.equal(JSON.stringify(profile), maxed);
+});
+
+test("projectile speed purchases apply next run and persist without speeding up existing bullets", () => {
+  const profile = Core.createProfile();
+  profile.gold = 50;
+  const game = startedGame(profile);
+  const target = enemyAt(game, game.player.x + 200, game.player.y);
+  game.shoot(target);
+  const oldBullet = game.bullets[0];
+  assert.equal(Core.buyUpgrade(profile, "projectileSpeed").success, true);
+  game.shoot(target);
+  assert.equal(game.stats.projectileSpeed, 1080);
+  assert.ok(game.bullets.every(bullet => Math.abs(Math.hypot(bullet.vx, bullet.vy) - 1080) < 1e-9));
+  const restored = Core.migrateProfile(JSON.parse(JSON.stringify(profile)));
+  assert.equal(restored.gold, 0);
+  assert.equal(restored.levels.projectileSpeed, 1);
+  assert.equal(Core.isValidProfile(restored), true);
+  game.start(restored);
+  game.shoot(target);
+  assert.equal(game.stats.projectileSpeed, 1100);
+  assert.ok(Math.abs(Math.hypot(game.bullets[0].vx, game.bullets[0].vy) - 1100) < 1e-9);
+  assert.ok(Math.abs(Math.hypot(oldBullet.vx, oldBullet.vy) - 1080) < 1e-9);
+});
+
+test("upgraded projectile speed affects every critical bullet without changing enemy fireballs", () => {
+  const profile = Core.createProfile();
+  profile.levels.projectileSpeed = 15;
+  profile.levels.bullets = 1;
+  profile.levels.critChance = 10;
+  const game = startedGame(profile);
+  game.random = () => 0;
+  game.shoot(enemyAt(game, game.player.x + 200, game.player.y + 200));
+  assert.equal(game.bullets.length, 4);
+  for (const bullet of game.bullets) {
+    assert.ok(Math.abs(Math.hypot(bullet.vx, bullet.vy) - 1380) < 1e-9);
+    assert.equal(bullet.critical, true);
+    assert.equal(bullet.damage, game.stats.damage * Core.CRIT_DAMAGE_MULTIPLIER);
+  }
+  game.shootFireball(enemyAt(game, game.player.x + 300, game.player.y));
+  assert.equal(Math.hypot(game.fireballs[0].vx, game.fireballs[0].vy), 260);
+});
+
+test("maximum projectile speed clips single and dual bullets from both guns to circular weapon range", () => {
+  for (const bulletsLevel of [0, 1]) {
+    for (const rangeLevel of [0, 15]) {
+      const profile = Core.createProfile();
+      profile.levels.projectileSpeed = 15;
+      profile.levels.bullets = bulletsLevel;
+      profile.levels.range = rangeLevel;
+      const game = startedGame(profile);
+      game.player.x = 200;
+      const origin = { x: game.player.x, y: game.player.y };
+      game.shoot(enemyAt(game, origin.x + 200, origin.y));
+      const bullets = [...game.bullets];
+      const outside = enemyAt(game, origin.x + game.stats.range + 30, origin.y, 1000);
+      game.enemies = [outside];
+      const frames = Math.ceil(game.stats.range / game.stats.projectileSpeed / 0.1) + 1;
+      for (let frame = 0; frame < frames; frame += 1) game.update(0.1);
+      for (const bullet of bullets) {
+        assert.ok(Math.abs(Math.hypot(bullet.x - origin.x, bullet.y - origin.y) - game.stats.range) < 1e-9);
+        assert.equal(bullet.remainingRange, 0);
+      }
+      assert.equal(game.bullets.length, 0);
+      assert.equal(outside.hp, 1000);
+    }
+  }
+});
+
+test("maximum projectile speed cannot skip an alien crossed within a simulation step", () => {
+  const profile = Core.createProfile();
+  profile.levels.projectileSpeed = 15;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  const enemy = enemyAt(game, game.player.x + 100, game.player.y, game.stats.damage);
+  game.enemies = [enemy];
+  game.update(0.1);
+  assert.equal(game.kills, 1);
+  assert.equal(enemy.hp, 0);
+  assert.equal(game.pickups.find(pickup => pickup.kind === "gold").value, Core.enemyGold(enemy));
 });
 
 test("health regeneration unlocks at 0.5 HP per second and upgrades to a five-HP cap", () => {
@@ -298,7 +446,7 @@ test("old saves gain zero critical chance without losing gold, existing upgrades
   const before = JSON.stringify(oldSave);
   const migrated = Core.migrateProfile(oldSave);
   assert.equal(JSON.stringify(oldSave), before);
-  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, critChance: 0 } });
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, critChance: 0, bullets: 1 } });
   assert.equal(Core.isValidProfile(migrated), true);
   assert.equal(Core.getStats(migrated).critChance, 0);
   assert.equal(Core.migrateProfile(migrated), migrated);
@@ -337,16 +485,16 @@ test("each simultaneous bullet rolls critical chance independently and doubles f
   const profile = Core.createProfile();
   profile.levels.critChance = 1;
   profile.levels.damage = 2;
-  profile.levels.bullets = 2;
+  profile.levels.bullets = 1;
   const game = startedGame(profile);
-  const rolls = [0.049, 0.05, 0.99];
+  const rolls = [0.049, 0.05, 0.99, 0];
   let index = 0;
   game.random = () => rolls[index++];
   game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
-  assert.equal(index, 3);
-  assert.deepEqual(game.bullets.map(bullet => bullet.critical), [true, false, false]);
-  assert.deepEqual(game.bullets.map(bullet => bullet.damage), [60, 30, 30]);
-  assert.equal(game.bulletsFired, 3);
+  assert.equal(index, 4);
+  assert.deepEqual(game.bullets.map(bullet => bullet.critical), [true, false, false, true]);
+  assert.deepEqual(game.bullets.map(bullet => bullet.damage), [60, 30, 30, 60]);
+  assert.equal(game.bulletsFired, 4);
   assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 1);
   assert.ok(game.bullets.every(bullet => Number.isFinite(bullet.remainingRange)));
 });
@@ -357,11 +505,11 @@ test("critical rolls match the displayed percentage at low, mid, and maximum lev
     profile.levels.critChance = level;
     const game = startedGame(profile);
     let roll = 0;
-    game.random = () => roll++ / 100;
+    game.random = () => (roll++ % 100) / 100;
     const target = enemyAt(game, game.player.x + 200, game.player.y);
     for (let shot = 0; shot < 100; shot += 1) game.shoot(target);
-    assert.equal(game.bullets.filter(bullet => bullet.critical).length, level * 5);
-    assert.equal(game.bulletsFired, 100);
+    assert.equal(game.bullets.filter(bullet => bullet.critical).length, level * 10);
+    assert.equal(game.bulletsFired, 200);
   }
 });
 
@@ -385,11 +533,11 @@ test("critical bullets deliver doubled damage and marked hit events only below t
     game.enemies.push(target);
     game.update(0.1);
     const damage = game.stats.damage * (critical ? Core.CRIT_DAMAGE_MULTIPLIER : 1);
-    assert.equal(target.hp, target.maxHp - damage);
+    assert.equal(target.hp, target.maxHp - damage * 2);
     const hit = game.drainEvents().find(event => event.type === "hit");
     assert.equal(hit.damage, damage);
     assert.equal(hit.critical, critical);
-    assert.equal(game.bulletsFired, 1);
+    assert.equal(game.bulletsFired, 2);
   }
 });
 
@@ -403,7 +551,7 @@ test("lethal critical bullets award exactly one kill and the enemy's normal gold
   game.update(0.1);
   advanceFrames(game, 30);
   assert.equal(game.kills, 1);
-  assert.equal(game.bulletsFired, 1);
+  assert.equal(game.bulletsFired, 2);
   const gold = game.pickups.filter(pickup => pickup.kind === "gold");
   assert.equal(gold.length, 1);
   assert.equal(gold[0].value, Core.enemyGold(target));
@@ -431,7 +579,7 @@ test("a critical chicken kill still explodes for normal blast damage without cri
   assert.equal(hits[1].damage, chicken.damage);
 });
 
-test("dual bullets cost 2500 for two bullets and 7500 for three, capped at level two", () => {
+test("dual bullets cost 2500 once for two bullets per gun capped at four total", () => {
   const profile = Core.createProfile();
   assert.equal(Core.getStats(profile).bullets, 1);
   assert.equal(Core.upgradeCost(profile, "bullets"), 2500);
@@ -444,21 +592,12 @@ test("dual bullets cost 2500 for two bullets and 7500 for three, capped at level
   assert.equal(profile.gold, 0);
   assert.equal(profile.levels.bullets, 1);
   assert.equal(Core.getStats(profile).bullets, 2);
-  assert.equal(Core.upgradeCost(profile, "bullets"), 7500);
-  profile.gold = 7499;
-  const beforeSecondLevel = JSON.stringify(profile);
-  assert.equal(Core.buyUpgrade(profile, "bullets").success, false);
-  assert.equal(JSON.stringify(profile), beforeSecondLevel);
-  profile.gold = 7500;
-  assert.deepEqual(Core.buyUpgrade(profile, "bullets"), { success: true, cost: 7500 });
-  assert.equal(profile.gold, 0);
-  assert.equal(profile.levels.bullets, 2);
-  assert.equal(Core.getStats(profile).bullets, 3);
+  assert.equal(Core.UPGRADES.bullets.maxLevel, 1);
   profile.gold = 10000;
+  const maxed = JSON.stringify(profile);
   assert.equal(Core.upgradeCost(profile, "bullets"), null);
   assert.equal(Core.buyUpgrade(profile, "bullets").success, false);
-  assert.equal(profile.gold, 10000);
-  assert.equal(profile.levels.bullets, 2);
+  assert.equal(JSON.stringify(profile), maxed);
   assert.equal(Core.isValidProfile(profile), true);
 });
 
@@ -490,7 +629,7 @@ test("migration preserves purchased dual bullets and rejects invalid upgrade lev
   assert.equal(migrated.levels.range, 0);
   assert.equal(migrated.levels.bullets, 1);
   assert.equal(Core.getStats(migrated).bullets, 2);
-  for (const level of [-1, 3, 0.5, null, "1"]) {
+  for (const level of [-1, 3, 0.5, 2.5, null, "1", "2", true]) {
     const invalid = { ...migrated, levels: { ...migrated.levels, bullets: level } };
     assert.equal(Core.migrateProfile(invalid), invalid);
     assert.equal(Core.isValidProfile(invalid), false);
@@ -510,7 +649,7 @@ test("dual bullets apply next run and remain unlocked after a save round trip", 
   assert.equal(restored.levels.bullets, 1);
   assert.equal(Core.isValidProfile(restored), true);
   game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
-  assert.equal(game.bullets.length, 2);
+  assert.equal(game.bullets.length, 4);
 });
 
 test("existing dual bullets and wave collection stay purchased without an extra charge", () => {
@@ -523,68 +662,84 @@ test("existing dual bullets and wave collection stay purchased without an extra 
   assert.equal(Core.isValidProfile(restored), true);
   assert.equal(JSON.stringify(restored), before);
   assert.equal(Core.getStats(restored).bullets, 2);
-  assert.equal(Core.upgradeCost(restored, "bullets"), 7500);
+  assert.equal(Core.upgradeCost(restored, "bullets"), null);
   assert.equal(Core.upgradeCost(restored, "wavePickup"), null);
 });
 
-test("the three-bullet upgrade applies next run and survives saving at level two", () => {
-  const profile = Core.createProfile();
-  profile.levels.bullets = 1;
-  profile.gold = 8000;
-  const game = startedGame(profile);
-  assert.deepEqual(Core.buyUpgrade(profile, "bullets"), { success: true, cost: 7500 });
-  assert.equal(game.stats.bullets, 2);
-  const restored = Core.migrateProfile(JSON.parse(JSON.stringify(profile)));
-  assert.equal(restored.gold, 500);
-  assert.equal(restored.levels.bullets, 2);
-  assert.equal(Core.isValidProfile(restored), true);
-  game.start(restored);
+test("legacy third-bullet saves migrate to four total without mutating or resetting other progress", () => {
+  const oldSave = Core.createProfile();
+  oldSave.levels.bullets = 2;
+  oldSave.levels.damage = 4;
+  oldSave.levels.fireRate = 25;
+  oldSave.levels.projectileSpeed = 15;
+  oldSave.levels.wavePickup = 1;
+  oldSave.wavePickupEnabled = false;
+  oldSave.gold = 8000;
+  oldSave.bestWave = 13;
+  oldSave.bestKills = 400;
+  oldSave.bestTime = 500;
+  oldSave.totalRuns = 9;
+  const before = JSON.stringify(oldSave);
+  assert.equal(Core.isValidProfile(oldSave), false);
+  const migrated = Core.migrateProfile(oldSave);
+  assert.equal(JSON.stringify(oldSave), before);
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, bullets: 1 } });
+  assert.equal(Core.isValidProfile(migrated), true);
+  assert.equal(Core.migrateProfile(migrated), migrated);
+  const restored = Core.migrateProfile(JSON.parse(JSON.stringify(migrated)));
+  assert.deepEqual(restored, migrated);
+  const game = startedGame(restored);
   game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
-  assert.equal(game.stats.bullets, 3);
-  assert.equal(game.bullets.length, 3);
+  assert.equal(game.stats.bullets, 2);
+  assert.equal(game.bullets.length, 4);
+  assert.deepEqual([0, 1].map(index => game.bullets.filter(bullet => bullet.gunIndex === index).length), [2, 2]);
   assert.equal(Core.upgradeCost(restored, "bullets"), null);
+  assert.equal(Core.buyUpgrade(restored, "bullets").success, false);
+  assert.deepEqual(restored, migrated);
 });
 
-test("three bullets deal full upgraded damage simultaneously without increasing fire rate", () => {
+test("two bullets from each gun deal full upgraded damage without increasing fire rate", () => {
   const profile = Core.createProfile();
-  profile.levels.bullets = 2;
+  profile.levels.bullets = 1;
   profile.levels.damage = 2;
   const game = startedGame(profile);
-  const target = enemyAt(game, game.player.x + 55, game.player.y, 120);
+  const target = enemyAt(game, game.player.x + 55, game.player.y, 300);
   game.enemies.push(target);
   game.update(1 / 60);
-  assert.equal(target.hp, 30);
+  assert.equal(target.hp, 180);
   const events = game.drainEvents();
-  assert.equal(events.filter(event => event.type === "hit" && event.damage === 30).length, 3);
+  assert.equal(events.filter(event => event.type === "hit" && event.damage === 30).length, 4);
   assert.equal(events.filter(event => event.type === "shot").length, 1);
   game.update(1 / 60);
-  assert.equal(target.hp, 30);
+  assert.equal(target.hp, 180);
   assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 0);
 });
 
-test("dual bullets fire simultaneously in parallel with full damage and one cooldown", () => {
+test("dual bullets fire two parallel projectiles from each gun with full damage and one cooldown", () => {
   const profile = Core.createProfile();
   profile.levels.bullets = 1;
   profile.levels.damage = 2;
   const game = startedGame(profile);
   game.enemies.push(enemyAt(game, game.player.x + 200, game.player.y, 1000));
   game.update(1 / 60);
-  assert.equal(game.bullets.length, 2);
-  const [left, right] = game.bullets;
-  assert.equal(left.x, right.x);
-  assert.equal(right.y - left.y, 10);
-  assert.equal(left.vx, right.vx);
-  assert.equal(left.vy, right.vy);
-  assert.equal(left.damage, 30);
-  assert.equal(right.damage, 30);
-  assert.equal(left.remainingRange, right.remainingRange);
+  assert.equal(game.bullets.length, 4);
+  for (const index of [0, 1]) {
+    const [left, right] = game.bullets.filter(bullet => bullet.gunIndex === index);
+    assert.ok(Math.abs(Math.hypot(right.x - left.x, right.y - left.y) - 10) < 1e-9);
+    assert.ok(Math.abs((right.x - left.x) * left.vx + (right.y - left.y) * left.vy) < 1e-9);
+    assert.equal(left.vx, right.vx);
+    assert.equal(left.vy, right.vy);
+    assert.equal(left.damage, 30);
+    assert.equal(right.damage, 30);
+    assert.ok(left.remainingRange > 0 && right.remainingRange > 0);
+  }
   assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 1);
   game.update(1 / 60);
-  assert.equal(game.bullets.length, 2);
+  assert.equal(game.bullets.length, 4);
   assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 0);
 });
 
-test("both bullets can damage the same enemy without duplicating rewards for a kill", () => {
+test("both guns can damage the same enemy without duplicating kill rewards", () => {
   const profile = Core.createProfile();
   profile.levels.bullets = 1;
   const game = startedGame(profile);
@@ -593,8 +748,8 @@ test("both bullets can damage the same enemy without duplicating rewards for a k
   const target = enemyAt(game, game.player.x + 55, game.player.y, 100);
   game.enemies.push(target);
   game.update(1 / 60);
-  assert.equal(target.hp, 100 - game.stats.damage * 2);
-  assert.equal(game.drainEvents().filter(event => event.type === "hit").length, 2);
+  assert.equal(target.hp, 100 - game.stats.damage * 4);
+  assert.equal(game.drainEvents().filter(event => event.type === "hit").length, 4);
   game.hitEnemy(target, target.hp);
   assert.equal(game.kills, 1);
   assert.equal(game.pickups.filter(pickup => pickup.kind === "gold").length, 1);
@@ -608,8 +763,8 @@ test("both bullets can damage the same enemy without duplicating rewards for a k
   assert.equal(lethal.pickups.filter(pickup => pickup.kind === "gold").length, 1);
 });
 
-test("two and three bullets stay inside circular weapon range at every firing angle", () => {
-  for (const level of [1, 2]) {
+test("single and dual bullets from both guns stay inside circular weapon range at every firing angle", () => {
+  for (const level of [0, 1]) {
     const profile = Core.createProfile();
     profile.levels.bullets = level;
     for (let i = 0; i < 8; i += 1) {
@@ -628,20 +783,21 @@ test("two and three bullets stay inside circular weapon range at every firing an
   }
 });
 
-test("both paired bullets can hit on the final clipped range segment", () => {
+test("paired bullets from both guns can hit a large target on the final clipped range segment", () => {
   const profile = Core.createProfile();
   profile.levels.bullets = 1;
   const game = startedGame(profile);
   game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
   const target = enemyAt(game, game.player.x + game.stats.range + 19, game.player.y, 100);
+  target.radius = 36;
   game.enemies.push(target);
   for (let i = 0; i < 4; i += 1) game.update(0.1);
-  assert.equal(target.hp, 100 - game.stats.damage * 2);
+  assert.equal(target.hp, 100 - game.stats.damage * 4);
   assert.equal(game.bullets.length, 0);
 });
 
-test("two and three bullets keep the full upgraded range up to 960 units", () => {
-  for (const level of [1, 2]) {
+test("single and dual bullets from both guns keep the full upgraded range up to 960 units", () => {
+  for (const level of [0, 1]) {
     const profile = Core.createProfile();
     profile.levels.bullets = level;
     profile.levels.range = Core.UPGRADES.range.maxLevel;
@@ -869,7 +1025,7 @@ test("old purchased wave-collection saves migrate to ON without losing or mutati
   const before = JSON.stringify(oldSave);
   const migrated = Core.migrateProfile(oldSave);
   assert.equal(JSON.stringify(oldSave), before);
-  assert.deepEqual(migrated, { ...oldSave, wavePickupEnabled: true });
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, bullets: 1 }, wavePickupEnabled: true });
   assert.equal(Core.isValidProfile(migrated), true);
   assert.equal(Core.migrateProfile(migrated), migrated);
 });
@@ -1047,7 +1203,174 @@ test("movement stays within the fixed map and diagonals are not faster", () => {
   assert.equal(straight.player.y, 27);
 });
 
-test("auto-fire chooses the nearest living alien", () => {
+test("the soldier has exactly two gun poses which rotate and move with its body", () => {
+  const idle = new Core.Game();
+  assert.equal(idle.getGunPoses().length, 2);
+  assert.ok(idle.getGunPoses().every(gun => gun.target === null));
+  const game = startedGame();
+  for (let i = 0; i < 8; i += 1) {
+    game.player.angle = i * Math.PI / 4;
+    const guns = game.getGunPoses();
+    assert.equal(guns.length, 2);
+    assert.deepEqual(guns.map(gun => gun.index), [0, 1]);
+    assert.ok(Math.abs(Math.hypot(guns[0].x - guns[1].x, guns[0].y - guns[1].y) - 32) < 1e-9);
+    for (const gun of guns) {
+      const side = gun.index === 0 ? -1 : 1;
+      assert.ok(Math.abs(gun.x - game.player.x - Math.cos(game.player.angle) * 4 + Math.sin(game.player.angle) * side * 16) < 1e-9);
+      assert.ok(Math.abs(gun.y - game.player.y - Math.sin(game.player.angle) * 4 - Math.cos(game.player.angle) * side * 16) < 1e-9);
+      assert.equal(gun.angle, game.player.angle);
+      assert.ok(Math.abs(Math.hypot(gun.x - game.player.x, gun.y - game.player.y) - Math.hypot(4, 16)) < 1e-9);
+    }
+  }
+  game.player.angle = 0;
+  const before = game.getGunPoses();
+  game.update(0.1, { x: 1, y: 0 });
+  for (const gun of game.getGunPoses()) {
+    assert.ok(Math.abs(gun.x - before[gun.index].x - game.stats.speed * 0.1) < 1e-9);
+    assert.equal(gun.y, before[gun.index].y);
+  }
+});
+
+test("each gun independently chooses its closest living enemy rather than the soldier's closest", () => {
+  const game = startedGame();
+  game.player.angle = 0;
+  const upper = enemyAt(game, game.player.x + 140, game.player.y - 35, 1000);
+  const lower = enemyAt(game, game.player.x + 136, game.player.y + 35, 1000);
+  const dead = enemyAt(game, game.player.x + 4, game.player.y - 16, 0);
+  game.enemies = [dead, lower, upper];
+  assert.equal(game.closestEnemy(), lower);
+  const guns = game.getGunPoses();
+  assert.deepEqual(guns.map(gun => gun.target), [upper, lower]);
+  game.shoot();
+  assert.equal(game.bullets.length, 2);
+  for (const bullet of game.bullets) {
+    const gun = guns[bullet.gunIndex];
+    assert.ok(Math.abs(Math.hypot(bullet.x - gun.x, bullet.y - gun.y) - 29) < 1e-9);
+    assert.ok(Math.abs(Math.atan2(bullet.vy, bullet.vx) - gun.angle) < 1e-9);
+  }
+  game.fireTimer = 100;
+  game.update(0.1);
+  assert.equal(upper.hp, 982);
+  assert.equal(lower.hp, 982);
+  game.killEnemy(upper);
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [lower, lower]);
+});
+
+test("automatic fire sends each gun's own bullets toward a different nearest target", () => {
+  for (const level of [0, 1]) {
+    const profile = Core.createProfile();
+    profile.levels.bullets = level;
+    const game = startedGame(profile);
+    game.player.angle = 0;
+    const upper = enemyAt(game, game.player.x + 140, game.player.y - 35, 1000);
+    const lower = enemyAt(game, game.player.x + 136, game.player.y + 35, 1000);
+    game.enemies = [lower, upper];
+    game.update(0.1);
+    assert.equal(upper.hp, 1000 - (level + 1) * game.stats.damage);
+    assert.equal(lower.hp, 1000 - (level + 1) * game.stats.damage);
+    assert.equal(game.bulletsFired, 2 * (level + 1));
+    assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 1);
+  }
+});
+
+test("both guns use the existing circular range even when an excluded enemy is closer to one gun", () => {
+  const game = startedGame();
+  game.player.angle = 0;
+  const inside = enemyAt(game, game.player.x, game.player.y + game.stats.range - 1);
+  const outside = enemyAt(game, game.player.x, game.player.y - game.stats.range - 1);
+  game.enemies = [outside, inside];
+  const guns = game.getGunPoses();
+  assert.ok(Math.hypot(outside.x - guns[0].x, outside.y - guns[0].y) < Math.hypot(inside.x - guns[0].x, inside.y - guns[0].y));
+  assert.deepEqual(guns.map(gun => gun.target), [inside, inside]);
+  game.enemies = [outside];
+  game.shoot();
+  assert.equal(game.bulletsFired, 0);
+  assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 0);
+});
+
+test("each gun starts with one bullet and retains two per gun after upgrading and saving", () => {
+  for (const level of [0, 1]) {
+    const profile = Core.createProfile();
+    profile.levels.bullets = level;
+    const saved = Core.migrateProfile(JSON.parse(JSON.stringify(profile)));
+    const game = startedGame(saved);
+    game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
+    assert.equal(game.getGunPoses().length, 2);
+    assert.equal(game.bullets.length, 2 * (level + 1));
+    for (const index of [0, 1]) {
+      const bullets = game.bullets.filter(bullet => bullet.gunIndex === index);
+      assert.equal(bullets.length, level + 1);
+      assert.ok(bullets.every(bullet => bullet.damage === game.stats.damage));
+    }
+  }
+});
+
+test("both guns clip independently aimed bullet lanes to the shared range at every torso angle", () => {
+  for (const level of [0, 1]) {
+    for (let i = 0; i < 8; i += 1) {
+      const profile = Core.createProfile();
+      profile.levels.bullets = level;
+      profile.levels.projectileSpeed = 15;
+      const game = startedGame(profile);
+      game.player.angle = i * Math.PI / 4;
+      game.enemies = [
+        enemyAt(game, game.player.x + 160, game.player.y - 80, 1000000),
+        enemyAt(game, game.player.x - 140, game.player.y + 90, 1000000),
+      ];
+      game.shoot();
+      const bullets = [...game.bullets];
+      game.enemies = [];
+      for (let frame = 0; frame < 4; frame += 1) game.update(0.1);
+      for (const bullet of bullets) {
+        assert.ok(Math.abs(Math.hypot(bullet.x - game.player.x, bullet.y - game.player.y) - game.stats.range) < 1e-9);
+        assert.equal(bullet.remainingRange, 0);
+      }
+      assert.equal(game.bullets.length, 0);
+    }
+  }
+});
+
+test("both guns share the upgraded fire-rate cooldown and cannot fire early after target changes", () => {
+  const game = startedGame();
+  game.player.angle = 0;
+  game.enemies = [enemyAt(game, game.player.x + 140, game.player.y - 35, 1000)];
+  game.update(1 / 60);
+  assert.equal(game.bulletsFired, 2);
+  game.enemies.push(enemyAt(game, game.player.x + 136, game.player.y + 35, 1000));
+  game.update(1 / 60);
+  assert.equal(game.bulletsFired, 2);
+  const guns = game.getGunPoses();
+  game.pause();
+  advanceFrames(game, 60, { x: 1, y: 0 });
+  assert.deepEqual(game.getGunPoses(), guns);
+  assert.equal(game.bulletsFired, 2);
+});
+
+test("both guns retain accurate range limits at maximum weapon-range and bullet upgrades", () => {
+  const profile = Core.createProfile();
+  profile.levels.range = 15;
+  profile.levels.bullets = 1;
+  const game = startedGame(profile);
+  game.enemies = [
+    enemyAt(game, game.player.x + 160, game.player.y - 80),
+    enemyAt(game, game.player.x - 140, game.player.y + 90),
+  ];
+  for (let i = 0; i < 8; i += 1) {
+    game.player.angle = i * Math.PI / 4;
+    game.bullets = [];
+    game.shoot();
+    assert.equal(game.bullets.length, 4);
+    for (const bullet of game.bullets) {
+      const speed = Math.hypot(bullet.vx, bullet.vy);
+      const endX = bullet.x + bullet.vx / speed * bullet.remainingRange;
+      const endY = bullet.y + bullet.vy / speed * bullet.remainingRange;
+      assert.ok(bullet.remainingRange > 0);
+      assert.ok(Math.abs(Math.hypot(endX - game.player.x, endY - game.player.y) - 960) < 1e-9);
+    }
+  }
+});
+
+test("auto-fire chooses the nearest living alien when both guns prefer it", () => {
   const game = startedGame();
   const far = enemyAt(game, game.player.x - 200, game.player.y);
   const near = enemyAt(game, game.player.x + 100, game.player.y);
@@ -1055,9 +1378,9 @@ test("auto-fire chooses the nearest living alien", () => {
   game.enemies.push(far, near, dead);
   assert.equal(game.closestEnemy(), near);
   game.update(1 / 60);
-  assert.equal(game.bullets.length, 1);
-  assert.ok(game.bullets[0].vx > 0);
-  assert.ok(Math.abs(game.bullets[0].vy) < 1e-8);
+  assert.equal(game.bullets.length, 2);
+  assert.ok(game.bullets.every(bullet => bullet.vx > 0));
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [near, near]);
 });
 
 test("auto-fire ignores enemies outside range and includes the exact range boundary", () => {
@@ -1070,7 +1393,7 @@ test("auto-fire ignores enemies outside range and includes the exact range bound
   alien.x = game.player.x + game.stats.range;
   assert.equal(game.closestEnemy(), alien);
   game.update(0.05);
-  assert.equal(game.bullets.length, 1);
+  assert.equal(game.bullets.length, 2);
 });
 
 test("targeting uses circular range rather than separate horizontal and vertical limits", () => {
@@ -1085,7 +1408,7 @@ test("moving into range starts automatic fire", () => {
   game.update(0.1, { x: 1, y: 0 });
   assert.equal(game.bullets.length, 0);
   game.update(0.1, { x: 1, y: 0 });
-  assert.equal(game.bullets.length, 1);
+  assert.equal(game.bullets.length, 2);
 });
 
 test("a range purchase extends targeting in the next run and survives saving", () => {
@@ -1105,7 +1428,7 @@ test("a range purchase extends targeting in the next run and survives saving", (
   assert.equal(restored.gold, 25);
 });
 
-test("bullets stop at their full range measured from the launch position, including muzzle offset", () => {
+test("bullets from offset guns stop at the shared circular range including muzzle offsets", () => {
   const game = startedGame();
   const origin = game.player.x;
   game.shoot(enemyAt(game, origin + 200, game.player.y));
@@ -1113,7 +1436,7 @@ test("bullets stop at their full range measured from the launch position, includ
   const outside = enemyAt(game, origin + game.stats.range + 30, game.player.y, 50);
   game.enemies = [outside];
   for (let i = 0; i < 4; i += 1) game.update(0.1);
-  assert.equal(bullet.x, origin + game.stats.range);
+  assert.ok(Math.abs(Math.hypot(bullet.x - origin, bullet.y - game.player.y) - game.stats.range) < 1e-9);
   assert.equal(bullet.remainingRange, 0);
   assert.equal(game.bullets.length, 0);
   assert.equal(outside.hp, 50);
@@ -1123,7 +1446,12 @@ test("the final clipped bullet segment can still hit a target intersecting the r
   const game = startedGame();
   const origin = game.player.x;
   game.shoot(enemyAt(game, origin + 200, game.player.y));
-  const target = enemyAt(game, origin + game.stats.range + 19, game.player.y, 50);
+  const bullet = game.bullets[0];
+  game.bullets = [bullet];
+  const speed = Math.hypot(bullet.vx, bullet.vy);
+  const endX = bullet.x + bullet.vx / speed * bullet.remainingRange;
+  const endY = bullet.y + bullet.vy / speed * bullet.remainingRange;
+  const target = enemyAt(game, endX + (endX - origin) / game.stats.range * 19, endY + (endY - game.player.y) / game.stats.range * 19, 50);
   game.enemies = [target];
   for (let i = 0; i < 4; i += 1) game.update(0.1);
   assert.equal(target.hp, 50 - game.stats.damage);
@@ -1177,9 +1505,9 @@ test("auto-fire can hit an alien that overlaps the soldier", () => {
 });
 
 test("upgraded fire rates do not lose shots to simulation-step rounding", () => {
-  for (const bulletsLevel of [0, 1, 2]) {
+  for (const [fireRateLevel, bulletsLevel] of [[15, 0], [15, 1], [25, 0], [25, 1]]) {
     const profile = Core.createProfile();
-    profile.levels.fireRate = 15;
+    profile.levels.fireRate = fireRateLevel;
     profile.levels.bullets = bulletsLevel;
     const game = startedGame(profile);
     game.beginWave(1);
@@ -2158,7 +2486,7 @@ test("automatic bullets can defeat the final boss and finalize its kill and shot
   assert.equal(game.phase, "ended");
   assert.equal(game.report.reason, "victory");
   assert.equal(game.report.kills, 1);
-  assert.equal(game.report.bulletsFired, 1);
+  assert.equal(game.report.bulletsFired, 2);
   assert.equal(game.report.damageTaken, 0);
   assert.equal(game.report.gold, Core.enemyGold(boss));
   assert.equal(game.drainEvents().some(event => event.type === "bossWindup"), false);
@@ -2199,7 +2527,7 @@ test("all nine wave clears end in a single victory without wave ten", () => {
   assert.equal(game.report.wave, 9);
   assert.equal(game.report.wavesCleared, 9);
   assert.equal(game.report.kills, 9);
-  assert.equal(game.report.bulletsFired, 9);
+  assert.equal(game.report.bulletsFired, 18);
   assert.equal(game.report.damageTaken, 9);
   assert.equal(game.report.gold, profile.gold);
   assert.equal(game.report.gold, game.coins);
@@ -2248,8 +2576,8 @@ test("victory waits for lingering fireballs rather than finishing while shots re
   assert.equal(game.report.reason, "victory");
 });
 
-test("bullets fired count individual projectiles including two- and three-barrel shots", () => {
-  for (const level of [0, 1, 2]) {
+test("bullets fired count two or four individual projectiles from both guns", () => {
+  for (const level of [0, 1]) {
     const profile = Core.createProfile();
     profile.levels.bullets = level;
     const game = startedGame(profile);
@@ -2258,7 +2586,7 @@ test("bullets fired count individual projectiles including two- and three-barrel
     advanceFrames(game, 60);
     const shots = game.drainEvents().filter(event => event.type === "shot").length;
     assert.ok(shots > 0);
-    assert.equal(game.bulletsFired, shots * (level + 1));
+    assert.equal(game.bulletsFired, shots * (level + 1) * 2);
     const fired = game.bulletsFired;
     game.pause();
     advanceFrames(game, 60);

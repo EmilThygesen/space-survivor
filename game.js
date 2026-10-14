@@ -176,6 +176,7 @@
   const symbols = {
     damage: '<path d="m8 22 13-13 3 3-13 13H8Zm13-13 3-3 3 3-3 3M6 26l-2 2m0-7 3-1m8 8-1 3"/>',
     fireRate: '<path d="m5 9 12-3-4 9 12-3-10 15 2-11-12 3ZM4 5h6M3 27h6"/>',
+    projectileSpeed: '<path d="M3 10h12M3 16h8M3 22h12m3-15 10 9-10 9M13 16h15"/>',
     range: '<circle cx="16" cy="16" r="9"/><path d="M16 3v8m0 10v8M3 16h8m10 0h8"/><circle cx="16" cy="16" r="2"/>',
     speed: '<path d="m17 6 7 8-6 5 6 7H12l-4-5 5-6-3-5ZM3 11h5M3 17h6M3 23h3"/>',
     hp: '<path d="M16 4 27 8v9c0 6-11 12-11 12S5 23 5 17V8ZM16 11v10m-5-5h10"/>',
@@ -189,12 +190,13 @@
   function displayStat(key, stats) {
     if (key === "damage") return `${stats.damage} dmg`;
     if (key === "fireRate") return `${stats.fireRate.toFixed(1)} / sec`;
+    if (key === "projectileSpeed") return `${stats.projectileSpeed} speed`;
     if (key === "range") return `${stats.range} range`;
     if (key === "speed") return `${stats.speed} speed`;
     if (key === "hp") return `${stats.hp} HP`;
     if (key === "healthRegen") return `${stats.healthRegen} HP/s`;
     if (key === "critChance") return `${stats.critChance}%`;
-    if (key === "bullets") return `${stats.bullets} ${stats.bullets === 1 ? "bullet" : "bullets"} / shot`;
+    if (key === "bullets") return `${stats.bullets} ${stats.bullets === 1 ? "bullet" : "bullets"} / gun`;
     if (key === "wavePickup") return stats.wavePickup === 1 ? "All gold after each wave" : "Manual pickup";
     return `${stats.pickup} radius`;
   }
@@ -425,6 +427,7 @@
     $("damageStat").textContent = stats.damage;
     $("critChanceStat").textContent = `${stats.critChance}%`;
     $("fireRateStat").innerHTML = `${stats.fireRate.toFixed(1)}<span class="unit"> / s</span>`;
+    $("projectileSpeedStat").textContent = stats.projectileSpeed;
     $("rangeStat").textContent = stats.range;
     $("healthRegenStat").textContent = stats.healthRegen;
     $("healthLabel").textContent = `${Math.ceil(hp)} / ${maxHp}`;
@@ -933,9 +936,10 @@
     }
   }
 
-  function drawPlayer() {
+  function drawPlayer(gunPoses) {
     const p = game.player;
     if (game.phase === "ended" && p.hp <= 0) return;
+    ctx.save();
     ctx.save();
     ctx.translate(p.x, p.y);
     if (game.phase === "running") {
@@ -950,26 +954,60 @@
       ctx.setLineDash([]);
     }
     circle(0, 6, 21, "#0007");
-    ctx.rotate(p.angle);
+    ctx.restore();
     if (p.invulnerable > 0 && Math.floor(p.invulnerable * 18) % 2 === 0) ctx.globalAlpha = 0.5;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);
     const stride = Math.sin(game.time * 22) * p.moving * 6;
-    ctx.fillStyle = "#507784";
-    ctx.fillRect(-15 + stride, -14, 13, 8);
-    ctx.fillRect(-15 - stride, 6, 13, 8);
-    ctx.fillStyle = "#243a4e"; ctx.fillRect(-16, -10, 12, 20);
-    ctx.fillStyle = "#719aab"; ctx.beginPath(); ctx.roundRect(-10, -12, 22, 24, 6); ctx.fill();
-    ctx.fillStyle = "#c3dae0"; ctx.beginPath(); ctx.roundRect(-4, -10, 18, 20, 6); ctx.fill();
-    ctx.fillStyle = "#44c5c2"; ctx.beginPath(); ctx.roundRect(5, -7, 7, 14, 3); ctx.fill();
-    ctx.fillStyle = "#a4d4da"; ctx.fillRect(3, 8, 16, 5);
-    const bulletCount = game.stats?.bullets ?? 1;
-    for (let i = 0; i < bulletCount; i += 1) {
-      const center = bulletCount === 1 ? 3.5 : (i - (bulletCount - 1) / 2) * 10;
-      ctx.fillStyle = "#364d61"; ctx.beginPath(); ctx.roundRect(10, center - 3.5, 23, 7, 2); ctx.fill();
-      ctx.fillStyle = "#e3d7af"; ctx.fillRect(28, center - 2.5, 7, 5);
-      if (p.muzzleFlash > 0) {
+    for (const side of [-1, 1]) {
+      const step = stride * side;
+      ctx.fillStyle = "#507784";
+      ctx.beginPath(); ctx.roundRect(-24 + step, side * 7 - 3.5, 17, 7, 3); ctx.fill();
+      ctx.fillStyle = "#1d3040";
+      ctx.beginPath(); ctx.roundRect(-27 + step, side * 7 - 4, 8, 8, 2); ctx.fill();
+    }
+    ctx.fillStyle = "#243a4e"; ctx.beginPath(); ctx.roundRect(-17, -9, 8, 18, 3); ctx.fill();
+    ctx.fillStyle = "#719aab"; ctx.beginPath(); ctx.roundRect(-12, -12, 22, 24, 7); ctx.fill();
+    ctx.fillStyle = "#3e6478"; ctx.beginPath(); ctx.roundRect(-9, -8, 12, 16, 4); ctx.fill();
+    ctx.fillStyle = "#a4d4da"; ctx.fillRect(-6, -6, 3, 12);
+    circle(6, 0, 9, "#243a4e");
+    circle(7, 0, 7.5, "#c3dae0");
+    ctx.fillStyle = "#44c5c2"; ctx.beginPath(); ctx.roundRect(10, -5, 4, 10, 2); ctx.fill();
+    ctx.restore();
+
+    const bodyCos = Math.cos(p.angle);
+    const bodySin = Math.sin(p.angle);
+    for (const pose of gunPoses) {
+      const side = pose.index === 0 ? -1 : 1;
+      const shoulderX = p.x - 3 * bodyCos - side * 11 * bodySin;
+      const shoulderY = p.y - 3 * bodySin + side * 11 * bodyCos;
+      const wristX = pose.x + 2 * Math.cos(pose.angle) - side * 5 * Math.sin(pose.angle);
+      const wristY = pose.y + 2 * Math.sin(pose.angle) + side * 5 * Math.cos(pose.angle);
+      const elbowX = (shoulderX + wristX) / 2 - side * 4 * bodySin;
+      const elbowY = (shoulderY + wristY) / 2 + side * 4 * bodyCos;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath(); ctx.moveTo(shoulderX, shoulderY); ctx.lineTo(elbowX, elbowY); ctx.lineTo(wristX, wristY);
+      ctx.strokeStyle = "#243a4e"; ctx.lineWidth = 9; ctx.stroke();
+      ctx.strokeStyle = "#719aab"; ctx.lineWidth = 6; ctx.stroke();
+    }
+    for (const pose of gunPoses) {
+      const side = pose.index === 0 ? -1 : 1;
+      ctx.save();
+      ctx.translate(pose.x, pose.y);
+      ctx.rotate(pose.angle);
+      ctx.fillStyle = "#243a4e"; ctx.fillRect(-1, side < 0 ? -8 : 2, 6, 6);
+      circle(2, side * 5, 3.2, "#b5d2dc");
+      ctx.fillStyle = "#364d61"; ctx.beginPath(); ctx.roundRect(-5, -4, 21, 8, 2); ctx.fill();
+      ctx.fillStyle = "#719aab"; ctx.fillRect(-1, -2, 12, 2);
+      ctx.fillStyle = "#e3d7af"; ctx.fillRect(16, -2.5, 13, 5);
+      if (pose.muzzleFlash > 0) {
         ctx.fillStyle = "#ffe8a7";
-        ctx.beginPath(); ctx.moveTo(34, center - 6.5); ctx.lineTo(48, center - 0.5); ctx.lineTo(34, center + 7.5); ctx.lineTo(38, center - 0.5); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(29, -4); ctx.lineTo(36, -8); ctx.lineTo(34, -2); ctx.lineTo(43, 0); ctx.lineTo(34, 2); ctx.lineTo(36, 8); ctx.lineTo(29, 4); ctx.closePath(); ctx.fill();
+        circle(29, 0, 3, "#fff8d8");
       }
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -1002,8 +1040,9 @@
         drawGoldCoin(coin.x, coin.y, wave.elapsed * 2);
       }
     }
-    const target = game.phase === "running" ? game.closestEnemy() : null;
-    if (target) {
+    const gunPoses = game.getGunPoses();
+    const targets = game.phase === "running" ? new Set(gunPoses.map((pose) => pose.target).filter(Boolean)) : new Set();
+    for (const target of targets) {
       ctx.strokeStyle = "#eaca8644"; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(target.x, target.y, target.radius + 8, 0, Math.PI * 2); ctx.stroke();
       for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 2) {
@@ -1024,7 +1063,7 @@
       circle(bullet.x, bullet.y, 2.6, bullet.critical ? "#ffd6eb" : "#fff3b9");
     }
     for (const fireball of game.fireballs) drawFireball(fireball);
-    drawPlayer();
+    drawPlayer(gunPoses);
     for (const enemy of game.enemies) {
       if (enemy.type === "overlord" && enemy.jump?.phase === "airborne") drawEnemy(enemy);
     }
