@@ -1,0 +1,9 @@
+{
+  "name": "space-survivor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An offline HTML, CSS, and JavaScript alien-survival game.",
+  "scripts": {
+    "test": "node --test game-core.test.cjs"
+  }
+}
