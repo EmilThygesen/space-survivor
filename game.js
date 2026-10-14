@@ -15,6 +15,7 @@
   const touch = { x: 0, y: 0, pointer: null };
   const particles = [];
   const floaters = [];
+  const blasts = [];
   let savingDisabled = false;
   let dirty = false;
   let saveClock = 0;
@@ -50,12 +51,14 @@
       notice("Your saved game could not be read. It has not been overwritten. Use 'Reset saved progress' in the armory to start a new save.");
       return Core.createProfile();
     }
-    if (!Core.isValidProfile(saved)) {
+    const migrated = Core.migrateProfile(saved);
+    if (!Core.isValidProfile(migrated)) {
       savingDisabled = true;
       notice("Your saved game has invalid or unsupported values. It has not been overwritten. Reset it in the armory to enable saving again.");
       return Core.createProfile();
     }
-    return saved;
+    if (migrated !== saved) dirty = true;
+    return migrated;
   }
 
   let profile = loadProfile();
@@ -128,6 +131,7 @@
     resetInput();
     particles.length = 0;
     floaters.length = 0;
+    blasts.length = 0;
     accumulator = 0;
     shake = 0;
     game.start(profile);
@@ -158,6 +162,7 @@
   const symbols = {
     damage: '<path d="m8 22 13-13 3 3-13 13H8Zm13-13 3-3 3 3-3 3M6 26l-2 2m0-7 3-1m8 8-1 3"/>',
     fireRate: '<path d="m5 9 12-3-4 9 12-3-10 15 2-11-12 3ZM4 5h6M3 27h6"/>',
+    range: '<circle cx="16" cy="16" r="9"/><path d="M16 3v8m0 10v8M3 16h8m10 0h8"/><circle cx="16" cy="16" r="2"/>',
     speed: '<path d="m17 6 7 8-6 5 6 7H12l-4-5 5-6-3-5ZM3 11h5M3 17h6M3 23h3"/>',
     hp: '<path d="M16 4 27 8v9c0 6-11 12-11 12S5 23 5 17V8ZM16 11v10m-5-5h10"/>',
     pickup: '<path d="M7 5v12a9 9 0 0 0 18 0V5h-6v12a3 3 0 0 1-6 0V5ZM7 11h6m6 0h6"/>',
@@ -166,6 +171,7 @@
   function displayStat(key, stats) {
     if (key === "damage") return `${stats.damage} dmg`;
     if (key === "fireRate") return `${stats.fireRate.toFixed(1)} / sec`;
+    if (key === "range") return `${stats.range} range`;
     if (key === "speed") return `${stats.speed} speed`;
     if (key === "hp") return `${stats.hp} HP`;
     return `${stats.pickup} radius`;
@@ -351,6 +357,7 @@
     $("runTime").textContent = formatTime(game.time);
     $("damageStat").textContent = stats.damage;
     $("fireRateStat").innerHTML = `${stats.fireRate.toFixed(1)}<span class="unit"> / s</span>`;
+    $("rangeStat").textContent = stats.range;
     $("healthLabel").textContent = `${Math.ceil(hp)} / ${maxHp}`;
     $("healthBar").setAttribute("aria-valuemax", String(maxHp));
     $("healthBar").setAttribute("aria-valuenow", String(Math.ceil(hp)));
@@ -393,7 +400,7 @@
         tone(440, 0.25, 0.045, "sine", 880);
       }
       if (event.type === "shot") tone(135, 0.045, 0.024, "square", 45);
-      if (event.type === "hit") floaters.push({ x: event.x, y: event.y - 17, text: String(game.stats.damage), color: "#f7efce", life: 0.55 });
+      if (event.type === "hit") floaters.push({ x: event.x, y: event.y - 17, text: String(Math.round(event.damage)), color: "#f7efce", life: 0.55 });
       if (event.type === "kill") {
         burst(event.x, event.y, event.color, 11, 130);
         tone(85, 0.06, 0.018, "triangle", 38);
@@ -411,6 +418,14 @@
         shake = reducedMotion ? 0 : 7;
         burst(event.x, event.y, "#f58c84", 6, 100);
         tone(110, 0.12, 0.04, "sawtooth", 40);
+      }
+      if (event.type === "chickenArmed") tone(680, 0.12, 0.04, "triangle", 320);
+      if (event.type === "explosion") {
+        blasts.push({ x: event.x, y: event.y, radius: event.radius, life: 0.45, maxLife: 0.45 });
+        burst(event.x, event.y, "#ffc56b", 28, 260);
+        burst(event.x, event.y, "#f4e8c9", 12, 160);
+        shake = reducedMotion ? 0 : Math.max(shake, 8);
+        tone(90, 0.25, 0.06, "sawtooth", 25);
       }
       if (event.type === "ended") {
         dirty = true;
@@ -491,7 +506,69 @@
     ctx.fill();
   }
 
+  function drawEnemyHealth(enemy) {
+    if (enemy.type !== "boss" && enemy.hp >= enemy.maxHp) return;
+    const r = enemy.radius;
+    ctx.fillStyle = "#0009"; ctx.fillRect(enemy.x - r, enemy.y - r - 13, r * 2, 4);
+    ctx.fillStyle = enemy.color; ctx.fillRect(enemy.x - r, enemy.y - r - 13, r * 2 * Math.max(0, enemy.hp / enemy.maxHp), 4);
+  }
+
+  function drawChicken(enemy) {
+    const r = enemy.radius;
+    const armed = enemy.explodeAt !== null;
+    const remaining = armed ? Math.max(0, enemy.explodeAt - game.time) : 0;
+    const pulse = armed && !reducedMotion && Math.sin(game.time * 10) > 0;
+    if (armed) {
+      ctx.save();
+      ctx.fillStyle = pulse ? "#ef44441c" : "#ef44440c";
+      ctx.strokeStyle = pulse ? "#ff7777" : "#ef4444";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.arc(enemy.x, enemy.y, Core.CHICKEN_EXPLOSION_RADIUS, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.save();
+    ctx.translate(enemy.x, enemy.y);
+    ctx.rotate(enemy.angle);
+    ctx.fillStyle = "#0006";
+    ctx.beginPath(); ctx.ellipse(0, 5, r * 1.15, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+    const feathers = enemy.hitFlash > 0 ? "#ffffff" : pulse ? "#ffb6a0" : enemy.color;
+    const stride = armed ? 0 : Math.sin(game.time * 24 + enemy.wobble) * 4;
+    ctx.strokeStyle = "#e9a742";
+    ctx.lineWidth = 3;
+    for (const side of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(-3 + side * stride, side * 9); ctx.lineTo(-8 + side * stride, side * 18); ctx.lineTo(-3 + side * stride, side * 20); ctx.stroke();
+    }
+    ctx.fillStyle = feathers;
+    ctx.beginPath(); ctx.moveTo(-10, -6); ctx.lineTo(-26, -10); ctx.lineTo(-22, 0); ctx.lineTo(-26, 10); ctx.lineTo(-10, 6); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-2, 0, r, r * 0.74, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = pulse ? "#dc8068" : "#d7c8a5";
+    for (const side of [-1, 1]) {
+      ctx.beginPath(); ctx.ellipse(-4, side * 8, 11, 4, side * 0.3, 0, Math.PI * 2); ctx.fill();
+    }
+    circle(11, 0, 10, feathers);
+    ctx.fillStyle = "#efb543";
+    ctx.beginPath(); ctx.moveTo(18, -4); ctx.lineTo(30, 0); ctx.lineTo(18, 4); ctx.fill();
+    circle(13, -6, 2.3, "#17222d");
+    circle(13, 6, 2.3, "#17222d");
+    for (const x of [3, 8, 13]) circle(x, 0, 3.5, "#e44f54");
+    ctx.restore();
+    drawEnemyHealth(enemy);
+    if (armed) {
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.font = '700 13px "Segoe UI", sans-serif';
+      ctx.fillStyle = "#ffcf9c";
+      ctx.fillText(`${remaining.toFixed(1)}s`, enemy.x, enemy.y - r - 22);
+      ctx.restore();
+    }
+  }
+
   function drawEnemy(enemy) {
+    if (enemy.type === "chicken") {
+      drawChicken(enemy);
+      return;
+    }
     const r = enemy.radius;
     const isBoss = enemy.type === "boss";
     ctx.save();
@@ -525,10 +602,7 @@
       }
     }
     ctx.restore();
-    if (isBoss || enemy.hp < enemy.maxHp) {
-      ctx.fillStyle = "#0009"; ctx.fillRect(enemy.x - r, enemy.y - r - 13, r * 2, 4);
-      ctx.fillStyle = enemy.color; ctx.fillRect(enemy.x - r, enemy.y - r - 13, r * 2 * Math.max(0, enemy.hp / enemy.maxHp), 4);
-    }
+    drawEnemyHealth(enemy);
     if (isBoss) {
       ctx.save();
       ctx.textAlign = "center";
@@ -545,6 +619,10 @@
     ctx.save();
     ctx.translate(p.x, p.y);
     if (game.phase === "running") {
+      ctx.strokeStyle = "#f4c46c33";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath(); ctx.arc(0, 0, game.stats.range, 0, Math.PI * 2); ctx.stroke();
       ctx.strokeStyle = "#7df1d515";
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 11]);
@@ -612,6 +690,16 @@
       circle(bullet.x, bullet.y, 2.6, "#fff3b9");
     }
     drawPlayer();
+    for (const blast of blasts) {
+      ctx.save();
+      ctx.globalAlpha = blast.life / blast.maxLife;
+      const radius = blast.radius * (reducedMotion ? 1 : Math.sqrt(1 - blast.life / blast.maxLife));
+      circle(blast.x, blast.y, radius, "#ef444438");
+      ctx.strokeStyle = "#ff7777";
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(blast.x, blast.y, radius, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
     for (const particle of particles) {
       ctx.globalAlpha = Math.min(1, particle.life / particle.maxLife);
       circle(particle.x, particle.y, particle.size, particle.color);
@@ -660,6 +748,10 @@
       accumulator = 0;
     }
     if (game.phase !== "paused") {
+      for (let i = blasts.length - 1; i >= 0; i -= 1) {
+        blasts[i].life -= dt;
+        if (blasts[i].life <= 0) blasts.splice(i, 1);
+      }
       for (let i = particles.length - 1; i >= 0; i -= 1) {
         const p = particles[i]; p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= Math.exp(-3 * dt); p.vy *= Math.exp(-3 * dt);
         if (p.life <= 0) particles.splice(i, 1);

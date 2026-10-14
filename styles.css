@@ -58,7 +58,7 @@ kbd { display: inline-block; border: 1px solid #3a4b59; border-bottom-width: 2px
 .arena-button kbd { margin-left: 8px; }
 .sector-label { position: absolute; bottom: 20px; right: 23px; font-size: 8px; color: #7e98a5; letter-spacing: 2px; pointer-events: none; }
 .wave-toast { position: absolute; top: 26%; left: 50%; transform: translateX(-50%); text-align: center; padding: 12px 24px; border-radius: 7px; background: #06141aeb; border: 1px solid #6ecab577; font-size: clamp(12px, 2vw, 21px); color: var(--accent); letter-spacing: 2px; font-weight: 700; white-space: nowrap; pointer-events: none; }
-.telemetry { display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 17px; border: 1px solid var(--line); border-radius: 10px; background: #0e1b28; }
+.telemetry { display: grid; grid-template-columns: repeat(6, 1fr); margin-top: 17px; border: 1px solid var(--line); border-radius: 10px; background: #0e1b28; }
 .telemetry > div { padding: 16px 23px; border-right: 1px solid var(--line); }
 .telemetry > div:last-child { border: 0; }
 .telemetry strong { display: block; margin-top: 7px; font-size: 24px; font-variant-numeric: tabular-nums; }
@@ -114,7 +114,7 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
 .buy-button:disabled { border-color: #283a43; color: #79909c; background: #172630; }
 .buy-button .price { color: var(--gold); }
 .buy-button:disabled .price { color: #a79772; }
-.armory-note { display: flex; flex-direction: column; justify-content: center; gap: 12px; border: 1px dashed #314652; border-radius: 9px; padding: 20px; color: #819dab; font-size: 12px; line-height: 1.7; }
+.armory-note { grid-column: 1 / -1; display: flex; flex-direction: column; justify-content: center; gap: 12px; border: 1px dashed #314652; border-radius: 9px; padding: 20px; color: #819dab; font-size: 12px; line-height: 1.7; }
 .armory-note strong { color: var(--gold); font-size: 13px; }
 .shop-message { min-height: 19px; margin: 19px 0; color: var(--accent); font-size: 12px; }
 .shop-bottom { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding-top: 16px; border-top: 1px solid #2d424f; }
@@ -160,8 +160,10 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
   .health-track { margin-top: 6px; height: 4px; }
   .arena-button { font-size: 9px; padding: 7px; }
   .arena-button kbd { display: none; }
-  .telemetry { margin-top: 12px; }
+  .telemetry { margin-top: 12px; grid-template-columns: repeat(3, 1fr); }
   .telemetry > div { padding: 11px 7px; }
+  .telemetry > div:nth-child(3n) { border-right: 0; }
+  .telemetry > div:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
   .telemetry .label { font-size: 6px; letter-spacing: .5px; }
   .telemetry strong { font-size: 17px; }
   .unit { font-size: 8px; }
