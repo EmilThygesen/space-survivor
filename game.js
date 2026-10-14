@@ -8,6 +8,7 @@
   const menu = $("menuDialog");
   const shop = $("shopDialog");
   const pause = $("pauseDialog");
+  const victory = $("victoryDialog");
   const SAVE_KEY = "space-survivor.save.v1";
   const keys = new Set();
   const movementKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
@@ -126,9 +127,18 @@
   }
 
   function startRun() {
+    const selectedLevel = $("levelSelect").querySelector('input[name="startLevel"]:checked');
+    if (!selectedLevel || selectedLevel.disabled || selectedLevel.value !== "1") {
+      notice("Only Level 1 is available. Levels 2 and 3 are coming soon.");
+      return;
+    }
     menu.close();
     shop.close();
     pause.close();
+    victory.close();
+    $("runSummary").hidden = true;
+    for (const id of ["victoryKills", "victoryBullets", "victoryDamage", "victoryGold", "victoryWaves"]) $(id).textContent = "0";
+    $("victoryTime").textContent = "00:00";
     resetInput();
     particles.length = 0;
     floaters.length = 0;
@@ -136,6 +146,8 @@
     goldWaves.length = 0;
     accumulator = 0;
     shake = 0;
+    toastTime = 0;
+    $("waveToast").hidden = true;
     game.start(profile);
     startAudio();
     canvas.focus({ preventScroll: true });
@@ -167,7 +179,9 @@
     range: '<circle cx="16" cy="16" r="9"/><path d="M16 3v8m0 10v8M3 16h8m10 0h8"/><circle cx="16" cy="16" r="2"/>',
     speed: '<path d="m17 6 7 8-6 5 6 7H12l-4-5 5-6-3-5ZM3 11h5M3 17h6M3 23h3"/>',
     hp: '<path d="M16 4 27 8v9c0 6-11 12-11 12S5 23 5 17V8ZM16 11v10m-5-5h10"/>',
+    healthRegen: '<path d="M16 10v12m-6-6h12M5 13a11 11 0 1 1 1 9M5 6v7h7"/>',
     pickup: '<path d="M7 5v12a9 9 0 0 0 18 0V5h-6v12a3 3 0 0 1-6 0V5ZM7 11h6m6 0h6"/>',
+    critChance: '<circle cx="9" cy="9" r="4"/><circle cx="23" cy="23" r="4"/><path d="m7 25 18-18"/>',
     bullets: '<path d="M6 25V10l4-5 4 5v15Zm12 0V10l4-5 4 5v15ZM6 18h8m4 0h8"/>',
     wavePickup: '<circle cx="7" cy="7" r="3"/><circle cx="25" cy="7" r="3"/><circle cx="7" cy="18" r="3"/><circle cx="25" cy="18" r="3"/><path d="M16 5v17m-5-5 5 5 5-5M8 27h16"/>',
   };
@@ -178,6 +192,8 @@
     if (key === "range") return `${stats.range} range`;
     if (key === "speed") return `${stats.speed} speed`;
     if (key === "hp") return `${stats.hp} HP`;
+    if (key === "healthRegen") return `${stats.healthRegen} HP/s`;
+    if (key === "critChance") return `${stats.critChance}%`;
     if (key === "bullets") return `${stats.bullets} ${stats.bullets === 1 ? "bullet" : "bullets"} / shot`;
     if (key === "wavePickup") return stats.wavePickup === 1 ? "All gold after each wave" : "Manual pickup";
     return `${stats.pickup} radius`;
@@ -196,7 +212,7 @@
       const nextProfile = { ...profile, levels: { ...profile.levels, [key]: profile.levels[key] + (maxed ? 0 : 1) } };
       const next = Core.getStats(nextProfile);
       const card = document.createElement("article");
-      card.className = `upgrade-card${affordable ? " affordable" : ""}${key === "bullets" || key === "wavePickup" ? " advanced" : ""}`;
+      card.className = `upgrade-card${affordable ? " affordable" : ""}${key === "bullets" || key === "wavePickup" ? " advanced" : ""}${key === "bullets" ? " advanced-start" : ""}`;
       card.innerHTML = `<div class="upgrade-top"><svg class="upgrade-symbol" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${symbols[key]}</svg><span class="upgrade-level">LVL ${profile.levels[key]} / ${upgrade.maxLevel}</span></div><h3>${upgrade.name}</h3><p>${upgrade.description}</p><div class="upgrade-values">${displayStat(key, current)}${maxed ? "" : `<span>&rarr;</span>${displayStat(key, next)}`}</div>`;
       if (canToggle && !profile.wavePickupEnabled) card.querySelector(".upgrade-values").textContent = "Disabled / manual pickup";
       const button = document.createElement("button");
@@ -237,32 +253,62 @@
     }
     const note = document.createElement("aside");
     note.className = "armory-note";
-    note.innerHTML = "<strong>Your gold stays with you.</strong><span>Collected coins and upgrades are saved locally. Clearing a wave restores 12% health. Green medkits heal another 22%.</span>";
+    note.innerHTML = "<strong>Your gold stays with you.</strong><span>Collected coins and upgrades are saved locally. Clearing a swarm wave restores 12% health and removes unused medkits. Green medkits heal another 22%.</span>";
     grid.append(note);
   }
 
   function openShop(showReport) {
     menu.close();
     pause.close();
-    $("runSummary").hidden = !showReport;
+    victory.close();
+    resetInput();
+    $("runSummary").hidden = !(showReport && game.report);
     if (showReport && game.report) {
       const report = game.report;
-      $("summaryWave").textContent = report.wave;
-      $("summaryKills").textContent = report.kills;
+      $("summaryWave").textContent = `${Math.min(report.wave, Core.LEVEL_WAVES)} / ${Core.LEVEL_WAVES}`;
+      $("summaryKills").textContent = report.kills.toLocaleString();
       $("summaryTime").textContent = formatTime(report.time);
-      $("summaryGold").textContent = `+${report.gold}`;
-      $("shopIntro").textContent = report.reason === "overrun" ? "The swarm won this round. Your collected gold survived. Refit and try again." : "Mission ended. Your collected gold is banked. Refit before your next run.";
+      $("summaryGold").textContent = `+${report.gold.toLocaleString()}`;
+      $("summaryBulletsStat").hidden = false;
+      $("summaryDamageStat").hidden = false;
+      $("summaryBullets").textContent = report.bulletsFired.toLocaleString();
+      $("summaryDamage").textContent = formatDamage(report.damageTaken);
+      $("shopIntro").textContent = report.reason === "victory" ? `Level 1 complete. All ${Core.LEVEL_WAVES} waves cleared and your rewards are banked. Refit or replay Level 1.` : report.reason === "overrun" ? "The swarm won this round. Your collected gold survived. Refit and try again." : "Mission ended. Your collected gold is banked. Refit before your next run.";
     } else {
       $("shopIntro").textContent = "Upgrades are permanent and carry over to every future run.";
     }
-    $("shopMessage").textContent = profile.gold < 20 ? "Deploy and collect gold to buy your first upgrade." : "Choose your upgrades, then deploy again.";
+    $("shopMessage").textContent = profile.gold < 20 ? "Deploy and collect gold to buy your first upgrade." : "Choose your upgrades, then pick a level to deploy again.";
     renderShop();
     if (!shop.open) shop.showModal();
   }
 
+  function openMenu() {
+    shop.close();
+    resetInput();
+    menu.showModal();
+    menu.scrollTop = 0;
+    $("level1").focus({ preventScroll: true });
+  }
+
+  function openVictory(report) {
+    menu.close();
+    pause.close();
+    shop.close();
+    resetInput();
+    $("victoryKills").textContent = report.kills.toLocaleString();
+    $("victoryBullets").textContent = report.bulletsFired.toLocaleString();
+    $("victoryDamage").textContent = formatDamage(report.damageTaken);
+    $("victoryTime").textContent = formatTime(report.time);
+    $("victoryGold").textContent = `+${report.gold.toLocaleString()}`;
+    $("victoryWaves").textContent = `${report.wavesCleared} / ${Core.LEVEL_WAVES}`;
+    if (!victory.open) victory.showModal();
+  }
+
   $("startButton").addEventListener("click", startRun);
-  $("shopStartButton").addEventListener("click", startRun);
+  $("shopStartButton").addEventListener("click", openMenu);
   $("menuShopButton").addEventListener("click", () => openShop(false));
+  $("victoryShopButton").addEventListener("click", () => openShop(true));
+  $("victoryReplayButton").addEventListener("click", startRun);
   $("wavePickupButton").addEventListener("click", toggleWaveCollection);
   $("pauseButton").addEventListener("click", pauseRun);
   $("resumeButton").addEventListener("click", resumeRun);
@@ -272,10 +318,7 @@
     processEvents();
     updateHud();
   });
-  $("shopBackButton").addEventListener("click", () => {
-    shop.close();
-    menu.showModal();
-  });
+  $("shopBackButton").addEventListener("click", openMenu);
   $("resetButton").addEventListener("click", () => {
     if (!window.confirm("Reset all saved gold, upgrades, and records? This cannot be undone.")) return;
     profile = Core.createProfile();
@@ -301,6 +344,7 @@
   });
   menu.addEventListener("cancel", event => event.preventDefault());
   shop.addEventListener("cancel", event => event.preventDefault());
+  victory.addEventListener("cancel", event => event.preventDefault());
   pause.addEventListener("cancel", event => {
     event.preventDefault();
     resumeRun();
@@ -364,6 +408,10 @@
     return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
   }
 
+  function formatDamage(value) {
+    return value.toLocaleString(undefined, { minimumFractionDigits: Number.isInteger(value) ? 0 : 1, maximumFractionDigits: 2 });
+  }
+
   function updateHud() {
     const active = game.phase === "running" || game.phase === "paused";
     const stats = active ? game.stats : Core.getStats(profile);
@@ -375,8 +423,10 @@
     $("kills").textContent = game.kills.toLocaleString();
     $("runTime").textContent = formatTime(game.time);
     $("damageStat").textContent = stats.damage;
+    $("critChanceStat").textContent = `${stats.critChance}%`;
     $("fireRateStat").innerHTML = `${stats.fireRate.toFixed(1)}<span class="unit"> / s</span>`;
     $("rangeStat").textContent = stats.range;
+    $("healthRegenStat").textContent = stats.healthRegen;
     $("healthLabel").textContent = `${Math.ceil(hp)} / ${maxHp}`;
     $("healthBar").setAttribute("aria-valuemax", String(maxHp));
     $("healthBar").setAttribute("aria-valuenow", String(Math.ceil(hp)));
@@ -386,8 +436,25 @@
     $("wavePickupButton").hidden = profile.levels.wavePickup !== 1;
     $("wavePickupButton").textContent = `Wave gold: ${profile.wavePickupEnabled ? "ON" : "OFF"}`;
     $("wavePickupButton").setAttribute("aria-pressed", String(profile.wavePickupEnabled));
-    $("missionStatus").textContent = game.phase === "paused" ? "MISSION PAUSED" : game.phase === "running" ? (game.countdown > 0 ? "NEXT WAVE INCOMING" : "SWARM DETECTED") : game.phase === "ended" ? "MISSION COMPLETE" : "AWAITING DEPLOYMENT";
-    $("waveLabel").textContent = active ? (game.countdown > 0 ? `WAVE ${game.wave + 1} / ${Math.ceil(game.countdown)}s` : `WAVE ${game.wave}`) : game.wave ? `WAVE ${game.wave}` : "SECTOR 07";
+    const wave = Math.min(Core.LEVEL_WAVES, game.wave + (active && game.countdown > 0 ? 1 : 0));
+    const won = game.report?.reason === "victory";
+    const showEnemyCount = active && game.waveActive;
+    $("waveEnemyCounter").hidden = !showEnemyCount;
+    $("missionStatus").hidden = showEnemyCount;
+    $("enemiesLeft").textContent = game.enemiesRemaining.toLocaleString();
+    $("missionStatus").textContent = game.phase === "paused" ? "LEVEL 1 / PAUSED" : game.phase === "running" ? (game.countdown > 0 ? `${wave === Core.LEVEL_WAVES ? "OVERLORD" : "NEXT WAVE"} IN ${Math.ceil(game.countdown)}s` : wave === Core.LEVEL_WAVES ? "LEVEL 1 / FINAL OVERLORD" : "LEVEL 1 / SWARM DETECTED") : game.phase === "ended" ? (won ? "LEVEL 1 COMPLETE" : game.report?.reason === "overrun" ? "SOLDIER OVERRUN" : "MISSION ENDED") : `${Core.LEVEL_WAVES} WAVES / ONE OVERLORD`;
+    $("waveLabel").textContent = wave ? `WAVE ${wave} / ${Core.LEVEL_WAVES}` : "LEVEL 1";
+    const boss = active ? game.enemies.find(enemy => enemy.type === "overlord" && enemy.hp > 0) : null;
+    $("bossHud").hidden = !boss;
+    if (boss) {
+      const hp = Math.max(0, boss.hp);
+      $("bossHealthLabel").textContent = `${Math.ceil(hp).toLocaleString()} / ${boss.maxHp.toLocaleString()}`;
+      $("bossHealthBar").setAttribute("aria-valuemax", String(boss.maxHp));
+      $("bossHealthBar").setAttribute("aria-valuenow", String(hp));
+      $("bossHealthFill").style.width = `${hp / boss.maxHp * 100}%`;
+      const remaining = boss.jump ? `${Math.max(0, boss.jump.endsAt - game.time).toFixed(1)}s` : "";
+      $("bossAction").textContent = !boss.jump ? "CHASING / YOU CAN OUTRUN IT" : boss.jump.phase === "windup" ? `JUMP CHARGING / ${remaining} / LEAVE THE RED TARGET` : boss.jump.phase === "airborne" ? `AIRBORNE / IMPACT IN ${remaining}` : `RECOVERING / ${remaining}`;
+    }
     if (savingDisabled) $("saveStatus").textContent = "Saving unavailable / see notice above";
   }
 
@@ -425,11 +492,11 @@
     for (const event of game.drainEvents()) {
       if (event.type === "start") showWaveToast("STAY MOBILE. STAY ALIVE.");
       if (event.type === "wave") {
-        showWaveToast(`WAVE ${event.wave} / INCOMING`);
+        showWaveToast(`WAVE ${Math.min(event.wave, Core.LEVEL_WAVES)} / ${Core.LEVEL_WAVES} / INCOMING`);
         tone(180, 0.3, 0.045, "triangle", 340);
       }
       if (event.type === "boss") {
-        showWaveToast("BOSS ALIEN / INCOMING");
+        showWaveToast(event.finalBoss ? `FINAL OVERLORD / WAVE ${Core.LEVEL_WAVES}` : "BOSS ALIEN / INCOMING");
         tone(95, 0.5, 0.05, "sawtooth", 210);
       }
       if (event.type === "clear") {
@@ -437,7 +504,7 @@
         tone(440, 0.25, 0.045, "sine", 880);
       }
       if (event.type === "shot") tone(135, 0.045, 0.024, "square", 45);
-      if (event.type === "hit") floaters.push({ x: event.x, y: event.y - 17, text: String(Math.round(event.damage)), color: "#f7efce", life: 0.55 });
+      if (event.type === "hit") floaters.push({ x: event.x, y: event.y - 17, text: `${event.critical ? "CRIT " : ""}${Math.round(event.damage)}`, color: event.critical ? "#ff91b5" : "#f7efce", life: event.critical ? 0.8 : 0.55 });
       if (event.type === "kill") {
         burst(event.x, event.y, event.color, 11, 130);
         tone(85, 0.06, 0.018, "triangle", 38);
@@ -451,7 +518,7 @@
             coins: event.coins.map((coin, index) => ({
               startX: coin.x, startY: coin.y, x: coin.x, y: coin.y, prevX: coin.x, prevY: coin.y,
               delay: reducedMotion ? 0 : index % 8 * 0.025,
-              duration: reducedMotion ? 0.18 : 0.7 + Math.hypot(coin.x - game.player.x, coin.y - game.player.y) / Math.hypot(Core.WIDTH, Core.HEIGHT) * 0.5,
+              duration: 2 * (reducedMotion ? 0.18 : 0.7 + Math.hypot(coin.x - game.player.x, coin.y - game.player.y) / Math.hypot(Core.WIDTH, Core.HEIGHT) * 0.5),
               bend: reducedMotion ? 0 : (index % 2 ? -1 : 1) * Math.min(90, Math.hypot(coin.x - game.player.x, coin.y - game.player.y) * 0.12),
               arrived: false,
             })),
@@ -473,6 +540,18 @@
         tone(110, 0.12, 0.04, "sawtooth", 40);
       }
       if (event.type === "chickenArmed") tone(680, 0.12, 0.04, "triangle", 320);
+      if (event.type === "bossWindup") tone(130, Core.FINAL_BOSS_JUMP_WINDUP, 0.04, "sawtooth", 390);
+      if (event.type === "bossLeap") {
+        burst(event.x, event.y, "#f06a83", 12, 170);
+        tone(340, Core.FINAL_BOSS_JUMP_DURATION, 0.035, "triangle", 80);
+      }
+      if (event.type === "bossSlam") {
+        blasts.push({ x: event.x, y: event.y, radius: event.radius, life: 0.65, maxLife: 0.65, kind: "slam" });
+        burst(event.x, event.y, "#f06a83", 32, 290);
+        burst(event.x, event.y, "#ffe1bc", 14, 180);
+        shake = reducedMotion ? 0 : Math.max(shake, 12);
+        tone(75, 0.35, 0.07, "sawtooth", 22);
+      }
       if (event.type === "skeletonCast") tone(220, 0.18, 0.025, "triangle", 440);
       if (event.type === "fireballShot") {
         burst(event.x, event.y, "#fb923c", 5, 55);
@@ -491,9 +570,15 @@
         dirty = true;
         saveProfile();
         resetInput();
+        toastTime = 0;
         $("waveToast").hidden = true;
         if (event.report.reason === "overrun") burst(game.player.x, game.player.y, "#7df1d5", 24, 160);
-        openShop(true);
+        if (event.report.reason === "victory") {
+          tone(440, 0.65, 0.05, "triangle", 880);
+          openVictory(event.report);
+        } else {
+          openShop(true);
+        }
       }
     }
   }
@@ -605,11 +690,56 @@
     }
   }
 
-  function drawEnemyHealth(enemy) {
-    if (enemy.type !== "boss" && enemy.hp >= enemy.maxHp) return;
+  function drawEnemyHealth(enemy, lift = 0) {
+    if (enemy.type !== "boss" && enemy.type !== "overlord" && enemy.hp >= enemy.maxHp) return;
     const r = enemy.radius;
-    ctx.fillStyle = "#0009"; ctx.fillRect(enemy.x - r, enemy.y - r - 13, r * 2, 4);
-    ctx.fillStyle = enemy.color; ctx.fillRect(enemy.x - r, enemy.y - r - 13, r * 2 * Math.max(0, enemy.hp / enemy.maxHp), 4);
+    ctx.fillStyle = "#0009"; ctx.fillRect(enemy.x - r, enemy.y - lift - r - 13, r * 2, 4);
+    ctx.fillStyle = enemy.color; ctx.fillRect(enemy.x - r, enemy.y - lift - r - 13, r * 2 * Math.max(0, enemy.hp / enemy.maxHp), 4);
+  }
+
+  function jumpProgress(jump) {
+    return Math.max(0, Math.min(1, (game.time - jump.startedAt) / (jump.endsAt - jump.startedAt)));
+  }
+
+  function drawBossTarget(enemy) {
+    const jump = enemy.jump;
+    if (!jump || (jump.phase !== "windup" && jump.phase !== "airborne")) return;
+    const x = jump.targetX;
+    const y = jump.targetY;
+    const r = Core.FINAL_BOSS_SLAM_RADIUS;
+    const charging = jump.phase === "windup";
+    const progress = jumpProgress(jump);
+    const remaining = Math.max(0, jump.endsAt - game.time) + (charging ? Core.FINAL_BOSS_JUMP_DURATION : 0);
+    ctx.save();
+    if (charging) {
+      ctx.setLineDash([10, 8]);
+      ctx.strokeStyle = "#ff819699";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(enemy.x, enemy.y); ctx.lineTo(x, y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    circle(x, y, r, reducedMotion ? "#ff335533" : `rgba(255, 51, 85, ${0.13 + Math.sin(game.time * 12) ** 2 * 0.12})`);
+    ctx.strokeStyle = "#170811"; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "#ff526e"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "#ffe1e5"; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(x, y, r + 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (charging ? progress : 1 - progress)); ctx.stroke();
+    ctx.strokeStyle = "#ff92a4"; ctx.lineWidth = 3;
+    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 2) {
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      ctx.beginPath(); ctx.moveTo(x + dx * (r - 20), y + dy * (r - 20)); ctx.lineTo(x + dx * (r + 13), y + dy * (r + 13)); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.moveTo(x - 12, y - 12); ctx.lineTo(x + 12, y + 12);
+    ctx.moveTo(x + 12, y - 12); ctx.lineTo(x - 12, y + 12); ctx.stroke();
+    const labelX = Math.max(145, Math.min(Core.WIDTH - 145, x));
+    const labelY = Math.max(25, Math.min(Core.HEIGHT - 14, y + r + 28));
+    ctx.fillStyle = "#200a16ed"; ctx.fillRect(labelX - 136, labelY - 19, 272, 27);
+    ctx.fillStyle = "#ffd5de";
+    ctx.font = '800 16px "Segoe UI", sans-serif'; ctx.textAlign = "center";
+    ctx.fillText(`IMPACT IN / ${remaining.toFixed(1)}s`, labelX, labelY);
+    ctx.restore();
   }
 
   function drawChicken(enemy) {
@@ -731,18 +861,35 @@
       return;
     }
     const r = enemy.radius;
-    const isBoss = enemy.type === "boss";
+    const isOverlord = enemy.type === "overlord";
+    const isBoss = enemy.type === "boss" || isOverlord;
+    const jump = isOverlord ? enemy.jump : null;
+    const airborne = jump?.phase === "airborne";
+    const arc = airborne ? Math.sin(jumpProgress(jump) * Math.PI) : 0;
+    const lift = arc * (reducedMotion ? 20 : 100);
     ctx.save();
-    ctx.translate(enemy.x, enemy.y);
+    if (isOverlord) {
+      ctx.fillStyle = "#0008";
+      ctx.beginPath(); ctx.ellipse(enemy.x, enemy.y + 8, r * (1.2 - arc * 0.3), r * (0.75 - arc * 0.2), enemy.angle, 0, Math.PI * 2); ctx.fill();
+      ctx.translate(enemy.x, enemy.y - lift);
+      if (!reducedMotion) {
+        if (airborne) ctx.scale(1 + arc * 0.15, 1 + arc * 0.15);
+        if (jump?.phase === "windup") ctx.scale(1 + jumpProgress(jump) * 0.08, 1 - jumpProgress(jump) * 0.12);
+      }
+    } else {
+      ctx.translate(enemy.x, enemy.y);
+    }
     ctx.rotate(enemy.angle);
-    ctx.fillStyle = "#0006";
-    ctx.beginPath(); ctx.ellipse(0, 5, r * 1.3, r * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+    if (!isOverlord) {
+      ctx.fillStyle = "#0006";
+      ctx.beginPath(); ctx.ellipse(0, 5, r * 1.3, r * 0.9, 0, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.strokeStyle = enemy.hitFlash > 0 ? "#e9ffe0" : enemy.color;
     ctx.lineWidth = isBoss || enemy.type === "brute" ? 5 : 3;
     for (const side of [-1, 1]) {
       for (let i = 0; i < 3; i += 1) {
         const x = (i - 1) * r * 0.65;
-        const step = Math.sin(game.time * enemy.speed * 0.13 + i * 1.8 + enemy.wobble) * 4;
+        const step = jump ? 0 : Math.sin(game.time * enemy.speed * 0.13 + i * 1.8 + enemy.wobble) * 4;
         ctx.beginPath(); ctx.moveTo(x, side * r * 0.5); ctx.lineTo(x - 5 + step, side * r * 1.15); ctx.lineTo(x + 2 + step, side * r * 1.5); ctx.stroke();
       }
     }
@@ -750,6 +897,15 @@
     ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#26372d77";
     ctx.beginPath(); ctx.ellipse(-r * 0.2, 0, r * 0.55, r * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+    if (isOverlord) {
+      ctx.fillStyle = enemy.hitFlash > 0 ? "#ffffff" : "#662d54";
+      ctx.strokeStyle = "#ffb0c2"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(-r * 0.95, 0); ctx.lineTo(-r * 0.35, -r * 0.52); ctx.lineTo(r * 0.14, 0); ctx.lineTo(-r * 0.35, r * 0.52); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "#ffe1bc"; ctx.lineWidth = 4;
+      for (const x of [-0.6, -0.3, 0]) {
+        ctx.beginPath(); ctx.moveTo(r * x, -r * 0.18); ctx.lineTo(r * (x + 0.12), 0); ctx.lineTo(r * x, r * 0.18); ctx.stroke();
+      }
+    }
     for (const side of [-1, 1]) {
       circle(r * 0.45, side * r * 0.35, r * 0.24, "#19212b");
       circle(r * 0.55, side * r * 0.35, r * 0.1, "#ffecbc");
@@ -760,16 +916,19 @@
       ctx.fillStyle = isBoss ? "#ffe1bc" : "#e2c9f3";
       for (const side of [-1, 1]) {
         ctx.beginPath(); ctx.moveTo(-r * 0.48, side * r * 0.56); ctx.lineTo(-r * 1.04, side * r * 0.96); ctx.lineTo(-r * 0.88, side * r * 0.24); ctx.fill();
+        if (isOverlord) {
+          ctx.beginPath(); ctx.moveTo(r * 0.2, side * r * 0.64); ctx.lineTo(r * 0.8, side * r * 1.18); ctx.lineTo(r * 0.58, side * r * 0.36); ctx.fill();
+        }
       }
     }
     ctx.restore();
-    drawEnemyHealth(enemy);
+    drawEnemyHealth(enemy, lift);
     if (isBoss) {
       ctx.save();
       ctx.textAlign = "center";
-      ctx.font = '700 11px "Segoe UI", sans-serif';
+      ctx.font = `700 ${isOverlord ? 17 : 11}px "Segoe UI", sans-serif`;
       ctx.fillStyle = "#ffe1bc";
-      ctx.fillText("BOSS", enemy.x, enemy.y - r - 20);
+      ctx.fillText(isOverlord ? (airborne ? "OVERLORD / AIRBORNE" : "FINAL OVERLORD") : "BOSS", enemy.x, enemy.y - lift - r - 20);
       ctx.restore();
     }
   }
@@ -821,7 +980,7 @@
     ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
     ctx.clearRect(0, 0, Core.WIDTH, Core.HEIGHT);
     ctx.save();
-    if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    if (shake > 0) ctx.translate(Math.sin(game.time * 169) * shake * 0.5, Math.cos(game.time * 137) * shake * 0.5);
     ctx.drawImage(floor, 0, 0);
     for (const pickup of game.pickups) {
       if (pickup.kind === "gold") {
@@ -852,23 +1011,43 @@
         ctx.beginPath(); ctx.moveTo(target.x + x * (target.radius + 5), target.y + y * (target.radius + 5)); ctx.lineTo(target.x + x * (target.radius + 12), target.y + y * (target.radius + 12)); ctx.stroke();
       }
     }
-    for (const enemy of game.enemies) drawEnemy(enemy);
+    for (const enemy of game.enemies) {
+      if (enemy.type === "overlord") drawBossTarget(enemy);
+    }
+    for (const enemy of game.enemies) {
+      if (enemy.type !== "overlord" || enemy.jump?.phase !== "airborne") drawEnemy(enemy);
+    }
     for (const bullet of game.bullets) {
       const length = Math.hypot(bullet.vx, bullet.vy);
-      ctx.strokeStyle = "#d6b75c66"; ctx.lineWidth = 3;
+      ctx.strokeStyle = bullet.critical ? "#ff91b566" : "#d6b75c66"; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(bullet.x - bullet.vx / length * 27, bullet.y - bullet.vy / length * 27); ctx.lineTo(bullet.x, bullet.y); ctx.stroke();
-      circle(bullet.x, bullet.y, 2.6, "#fff3b9");
+      circle(bullet.x, bullet.y, 2.6, bullet.critical ? "#ffd6eb" : "#fff3b9");
     }
     for (const fireball of game.fireballs) drawFireball(fireball);
     drawPlayer();
+    for (const enemy of game.enemies) {
+      if (enemy.type === "overlord" && enemy.jump?.phase === "airborne") drawEnemy(enemy);
+    }
     for (const blast of blasts) {
       ctx.save();
       ctx.globalAlpha = blast.life / blast.maxLife;
       const radius = blast.radius * (reducedMotion ? 1 : Math.sqrt(1 - blast.life / blast.maxLife));
-      circle(blast.x, blast.y, radius, "#ef444438");
-      ctx.strokeStyle = "#ff7777";
-      ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(blast.x, blast.y, radius, 0, Math.PI * 2); ctx.stroke();
+      if (blast.kind === "slam") {
+        circle(blast.x, blast.y, radius, "#f06a8329");
+        ctx.strokeStyle = "#ff526e"; ctx.lineWidth = 7;
+        ctx.beginPath(); ctx.arc(blast.x, blast.y, radius, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = "#ffe1bc"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(blast.x, blast.y, radius * 0.72, 0, Math.PI * 2); ctx.stroke();
+        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+          ctx.beginPath(); ctx.moveTo(blast.x + Math.cos(angle) * radius * 0.8, blast.y + Math.sin(angle) * radius * 0.8);
+          ctx.lineTo(blast.x + Math.cos(angle) * radius * 1.15, blast.y + Math.sin(angle) * radius * 1.15); ctx.stroke();
+        }
+      } else {
+        circle(blast.x, blast.y, radius, "#ef444438");
+        ctx.strokeStyle = "#ff7777";
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(blast.x, blast.y, radius, 0, Math.PI * 2); ctx.stroke();
+      }
       ctx.restore();
     }
     for (const particle of particles) {

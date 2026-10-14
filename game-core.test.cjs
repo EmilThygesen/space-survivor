@@ -3,6 +3,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Core = require("./game-core.js");
+const JUMP_WINDUP_FRAMES = Math.round(Core.FINAL_BOSS_JUMP_WINDUP * 60);
+const JUMP_FLIGHT_FRAMES = Math.round(Core.FINAL_BOSS_JUMP_DURATION * 60);
+const JUMP_SLAM_FRAMES = JUMP_WINDUP_FRAMES + JUMP_FLIGHT_FRAMES;
 
 function startedGame(profile = Core.createProfile()) {
   const game = new Core.Game(() => 0.5);
@@ -15,8 +18,8 @@ function enemyAt(game, x, y, hp = 50) {
   return { x, y, hp, maxHp: hp, radius: 17, speed: 0, damage: 8, type: "drone", color: "#a8d673", contactTimer: 0, hitFlash: 0, angle: 0, wobble: 0 };
 }
 
-function chickenEncounter(distance = 60) {
-  const game = startedGame();
+function chickenEncounter(distance = 60, profile = Core.createProfile()) {
+  const game = startedGame(profile);
   game.beginWave(1);
   game.spawnRemaining = 0;
   game.random = () => 0.9;
@@ -43,6 +46,19 @@ function skeletonEncounter(distance = 300, wave = Core.SKELETON_START_WAVE) {
   skeleton.y = game.player.y;
   game.drainEvents();
   return { game, skeleton };
+}
+
+function finalBossEncounter(distance = 300, profile = Core.createProfile()) {
+  const game = startedGame(profile);
+  game.beginWave(Core.LEVEL_WAVES);
+  game.fireTimer = 10000;
+  const boss = game.enemies[0];
+  boss.x = game.player.x + distance;
+  boss.y = game.player.y;
+  boss.speed = 0;
+  boss.nextJumpAt = 0;
+  game.drainEvents();
+  return { game, boss };
 }
 
 function advanceFrames(game, count, input) {
@@ -110,12 +126,309 @@ test("old saves gain new level-zero upgrades without losing or mutating progress
   const original = JSON.stringify(oldSave);
   const migrated = Core.migrateProfile(oldSave);
   assert.equal(JSON.stringify(oldSave), original);
-  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0, bullets: 0, wavePickup: 0 }, wavePickupEnabled: true });
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0, bullets: 0, wavePickup: 0, critChance: 0, healthRegen: 0 }, wavePickupEnabled: true });
   assert.equal(Core.isValidProfile(migrated), true);
   assert.equal(Core.getStats(migrated).range, 360);
   assert.equal(Core.getStats(migrated).bullets, 1);
   assert.equal(Core.getStats(migrated).wavePickup, 0);
   assert.equal(Core.migrateProfile(migrated), migrated);
+});
+
+test("health regeneration unlocks at 0.5 HP per second and upgrades to a five-HP cap", () => {
+  const profile = Core.createProfile();
+  assert.equal(Core.getStats(profile).healthRegen, 0);
+  assert.equal(Core.upgradeCost(profile, "healthRegen"), 100);
+  profile.gold = 99;
+  const before = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "healthRegen").success, false);
+  assert.equal(JSON.stringify(profile), before);
+  profile.gold = 100000;
+  for (let level = 1; level <= 10; level += 1) {
+    const cost = Core.upgradeCost(profile, "healthRegen");
+    assert.equal(cost, Math.ceil(100 * Math.pow(1.38, level - 1)));
+    const gold = profile.gold;
+    assert.deepEqual(Core.buyUpgrade(profile, "healthRegen"), { success: true, cost });
+    assert.equal(profile.gold, gold - cost);
+    assert.equal(Core.getStats(profile).healthRegen, level * 0.5);
+  }
+  assert.equal(Core.getStats(profile).healthRegen, 5);
+  assert.equal(Core.upgradeCost(profile, "healthRegen"), null);
+  const maxed = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "healthRegen").success, false);
+  assert.equal(JSON.stringify(profile), maxed);
+  assert.equal(Core.isValidProfile(profile), true);
+});
+
+test("old saves gain locked health regeneration without losing or mutating progress", () => {
+  const oldSave = Core.createProfile();
+  delete oldSave.levels.healthRegen;
+  oldSave.gold = 1234;
+  oldSave.levels.hp = 4;
+  oldSave.levels.critChance = 3;
+  oldSave.levels.wavePickup = 1;
+  oldSave.wavePickupEnabled = false;
+  oldSave.bestWave = 13;
+  oldSave.bestKills = 500;
+  oldSave.bestTime = 400;
+  oldSave.totalRuns = 7;
+  const original = JSON.stringify(oldSave);
+  const migrated = Core.migrateProfile(oldSave);
+  assert.equal(JSON.stringify(oldSave), original);
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, healthRegen: 0 } });
+  assert.equal(Core.getStats(migrated).healthRegen, 0);
+  assert.equal(Core.isValidProfile(migrated), true);
+  assert.equal(Core.migrateProfile(migrated), migrated);
+  for (const level of [-1, 11, 0.5, null, "1", true]) {
+    const invalid = { ...migrated, levels: { ...migrated.levels, healthRegen: level } };
+    assert.equal(Core.migrateProfile(invalid), invalid);
+    assert.equal(Core.isValidProfile(invalid), false);
+  }
+});
+
+test("health regeneration scales with elapsed time and never exceeds upgraded maximum health", () => {
+  for (const level of [0, 1, 5, 10]) {
+    for (const dt of [1 / 60, 0.1]) {
+      const profile = Core.createProfile();
+      profile.levels.healthRegen = level;
+      profile.levels.hp = 3;
+      const game = startedGame(profile);
+      game.player.hp = 50;
+      for (let frame = 0; frame < Math.round(1 / dt); frame += 1) game.update(dt);
+      assert.ok(Math.abs(game.player.hp - (50 + level * 0.5)) < 1e-9);
+      if (level > 0) {
+        game.player.hp = game.player.maxHp - 0.001;
+        game.update(dt);
+        assert.equal(game.player.hp, 160);
+      }
+    }
+  }
+});
+
+test("health regeneration purchases apply next run, persist in saves, and stop while paused or ended", () => {
+  const profile = Core.createProfile();
+  profile.gold = 100;
+  const game = startedGame(profile);
+  assert.equal(Core.buyUpgrade(profile, "healthRegen").success, true);
+  game.player.hp = 50;
+  game.update(0.1);
+  assert.equal(game.player.hp, 50);
+  assert.equal(game.stats.healthRegen, 0);
+  const saved = JSON.parse(JSON.stringify(profile));
+  assert.equal(Core.isValidProfile(saved), true);
+  assert.equal(saved.gold, 0);
+  game.start(saved);
+  assert.equal(game.stats.healthRegen, 0.5);
+  game.hurt(10, game.player.x, game.player.y);
+  game.beginWave(1);
+  game.spawnTimer = 10000;
+  advanceFrames(game, 60);
+  assert.ok(Math.abs(game.player.hp - 90.5) < 1e-9);
+  assert.equal(game.damageTaken, 10);
+  const hp = game.player.hp;
+  game.pause();
+  advanceFrames(game, 60);
+  assert.equal(game.player.hp, hp);
+  game.resume();
+  game.finish("retreated");
+  advanceFrames(game, 60);
+  assert.equal(game.player.hp, hp);
+  assert.equal(game.report.damageTaken, 10);
+  game.start(saved);
+  game.hurt(1000, game.player.x, game.player.y);
+  advanceFrames(game, 60);
+  assert.equal(game.phase, "ended");
+  assert.equal(game.player.hp, 0);
+});
+
+test("health regeneration continues during the countdown between waves", () => {
+  const profile = Core.createProfile();
+  profile.levels.healthRegen = 1;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  game.player.hp = 50;
+  game.update(1 / 60);
+  assert.equal(game.waveActive, false);
+  assert.ok(game.countdown > 0);
+  const hp = game.player.hp;
+  advanceFrames(game, 60);
+  assert.ok(Math.abs(game.player.hp - hp - 0.5) < 1e-9);
+  assert.equal(game.wavesCleared, 1);
+});
+
+test("critical chance starts at zero and upgrades by five percentage points to a fifty-percent cap", () => {
+  const profile = Core.createProfile();
+  assert.equal(Core.getStats(profile).critChance, 0);
+  assert.equal(Core.upgradeCost(profile, "critChance"), 500);
+  profile.gold = 499;
+  const before = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "critChance").success, false);
+  assert.equal(JSON.stringify(profile), before);
+  profile.gold = 100000;
+  let previousCost = 0;
+  for (let level = 1; level <= 10; level += 1) {
+    const cost = Core.upgradeCost(profile, "critChance");
+    assert.equal(cost, Math.ceil(500 * Math.pow(1.38, level - 1)));
+    const gold = profile.gold;
+    assert.ok(cost > previousCost);
+    assert.deepEqual(Core.buyUpgrade(profile, "critChance"), { success: true, cost });
+    assert.equal(profile.gold, gold - cost);
+    assert.equal(Core.getStats(profile).critChance, level * 5);
+    previousCost = cost;
+  }
+  assert.equal(Core.upgradeCost(profile, "critChance"), null);
+  const maxed = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "critChance").success, false);
+  assert.equal(JSON.stringify(profile), maxed);
+  assert.equal(Core.isValidProfile(profile), true);
+});
+
+test("old saves gain zero critical chance without losing gold, existing upgrades, records, or an OFF toggle", () => {
+  const oldSave = Core.createProfile();
+  delete oldSave.levels.critChance;
+  oldSave.gold = 1234;
+  oldSave.levels.damage = 4;
+  oldSave.levels.bullets = 2;
+  oldSave.levels.wavePickup = 1;
+  oldSave.wavePickupEnabled = false;
+  oldSave.bestWave = 13;
+  oldSave.bestKills = 500;
+  oldSave.bestTime = 400;
+  oldSave.totalRuns = 7;
+  const before = JSON.stringify(oldSave);
+  const migrated = Core.migrateProfile(oldSave);
+  assert.equal(JSON.stringify(oldSave), before);
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, critChance: 0 } });
+  assert.equal(Core.isValidProfile(migrated), true);
+  assert.equal(Core.getStats(migrated).critChance, 0);
+  assert.equal(Core.migrateProfile(migrated), migrated);
+  for (const level of [-1, 11, 0.5, null, "1", true]) {
+    const invalid = { ...migrated, levels: { ...migrated.levels, critChance: level } };
+    assert.equal(Core.migrateProfile(invalid), invalid);
+    assert.equal(Core.isValidProfile(invalid), false);
+  }
+});
+
+test("critical chance purchases apply next run and survive saving without rerolling existing bullets", () => {
+  const profile = Core.createProfile();
+  profile.gold = 500;
+  const game = startedGame(profile);
+  game.random = () => 0;
+  const target = enemyAt(game, game.player.x + 200, game.player.y);
+  Core.buyUpgrade(profile, "critChance");
+  assert.equal(game.stats.critChance, 0);
+  game.shoot(target);
+  const oldBullet = game.bullets[0];
+  assert.equal(oldBullet.critical, false);
+  assert.equal(oldBullet.damage, game.stats.damage);
+  const saved = JSON.parse(JSON.stringify(profile));
+  assert.equal(Core.migrateProfile(saved), saved);
+  assert.equal(saved.gold, 0);
+  game.start(saved);
+  assert.equal(game.stats.critChance, 5);
+  game.shoot(target);
+  assert.equal(game.bullets[0].critical, true);
+  assert.equal(game.bullets[0].damage, game.stats.damage * 2);
+  assert.equal(oldBullet.critical, false);
+  assert.equal(oldBullet.damage, game.stats.damage);
+});
+
+test("each simultaneous bullet rolls critical chance independently and doubles full upgraded damage", () => {
+  const profile = Core.createProfile();
+  profile.levels.critChance = 1;
+  profile.levels.damage = 2;
+  profile.levels.bullets = 2;
+  const game = startedGame(profile);
+  const rolls = [0.049, 0.05, 0.99];
+  let index = 0;
+  game.random = () => rolls[index++];
+  game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
+  assert.equal(index, 3);
+  assert.deepEqual(game.bullets.map(bullet => bullet.critical), [true, false, false]);
+  assert.deepEqual(game.bullets.map(bullet => bullet.damage), [60, 30, 30]);
+  assert.equal(game.bulletsFired, 3);
+  assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 1);
+  assert.ok(game.bullets.every(bullet => Number.isFinite(bullet.remainingRange)));
+});
+
+test("critical rolls match the displayed percentage at low, mid, and maximum levels", () => {
+  for (const level of [1, 5, 10]) {
+    const profile = Core.createProfile();
+    profile.levels.critChance = level;
+    const game = startedGame(profile);
+    let roll = 0;
+    game.random = () => roll++ / 100;
+    const target = enemyAt(game, game.player.x + 200, game.player.y);
+    for (let shot = 0; shot < 100; shot += 1) game.shoot(target);
+    assert.equal(game.bullets.filter(bullet => bullet.critical).length, level * 5);
+    assert.equal(game.bulletsFired, 100);
+  }
+});
+
+test("zero critical chance keeps normal damage without consuming randomness", () => {
+  const game = startedGame();
+  let rolls = 0;
+  game.random = () => { rolls += 1; return 0; };
+  game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
+  assert.equal(rolls, 0);
+  assert.equal(game.bullets[0].damage, 18);
+  assert.equal(game.bullets[0].critical, false);
+});
+
+test("critical bullets deliver doubled damage and marked hit events only below the probability threshold", () => {
+  for (const [roll, critical] of [[0.049, true], [0.05, false]]) {
+    const profile = Core.createProfile();
+    profile.levels.critChance = 1;
+    const game = startedGame(profile);
+    game.random = () => roll;
+    const target = enemyAt(game, game.player.x + 80, game.player.y, 1000);
+    game.enemies.push(target);
+    game.update(0.1);
+    const damage = game.stats.damage * (critical ? Core.CRIT_DAMAGE_MULTIPLIER : 1);
+    assert.equal(target.hp, target.maxHp - damage);
+    const hit = game.drainEvents().find(event => event.type === "hit");
+    assert.equal(hit.damage, damage);
+    assert.equal(hit.critical, critical);
+    assert.equal(game.bulletsFired, 1);
+  }
+});
+
+test("lethal critical bullets award exactly one kill and the enemy's normal gold reward", () => {
+  const profile = Core.createProfile();
+  profile.levels.critChance = 1;
+  const game = startedGame(profile);
+  game.random = () => 0;
+  const target = enemyAt(game, game.player.x + 80, game.player.y, 30);
+  game.enemies.push(target);
+  game.update(0.1);
+  advanceFrames(game, 30);
+  assert.equal(game.kills, 1);
+  assert.equal(game.bulletsFired, 1);
+  const gold = game.pickups.filter(pickup => pickup.kind === "gold");
+  assert.equal(gold.length, 1);
+  assert.equal(gold[0].value, Core.enemyGold(target));
+  assert.equal(game.drainEvents().filter(event => event.type === "kill").length, 1);
+});
+
+test("a critical chicken kill still explodes for normal blast damage without critical collateral", () => {
+  const profile = Core.createProfile();
+  profile.levels.critChance = 1;
+  const { game, chicken } = chickenEncounter(160, profile);
+  const collateral = enemyAt(game, game.player.x + 180, game.player.y, 200);
+  game.enemies.push(collateral);
+  game.random = () => 0;
+  game.fireTimer = 0;
+  game.update(0.1);
+  game.update(1 / 60);
+  assert.equal(chicken.hp, 0);
+  assert.equal(collateral.hp, collateral.maxHp - chicken.damage);
+  assert.equal(game.damageTaken, 0);
+  const hits = game.drainEvents().filter(event => event.type === "hit");
+  assert.equal(hits.length, 2);
+  assert.equal(hits[0].critical, true);
+  assert.equal(hits[0].damage, 36);
+  assert.equal(hits[1].critical, false);
+  assert.equal(hits[1].damage, chicken.damage);
 });
 
 test("dual bullets cost 2500 for two bullets and 7500 for three, capped at level two", () => {
@@ -390,7 +703,7 @@ test("old saves add locked wave collection without resetting purchased dual bull
   }
 });
 
-test("wave collection waits for a full clear, collects every distant coin once, and leaves medkits", () => {
+test("wave collection waits for a full clear, collects every distant coin once, and removes medkits", () => {
   const profile = Core.createProfile();
   profile.levels.wavePickup = 1;
   const game = startedGame(profile);
@@ -420,7 +733,7 @@ test("wave collection waits for a full clear, collects every distant coin once, 
   assert.equal(profile.gold, 18);
   assert.equal(game.coins, 18);
   assert.equal(game.waveActive, false);
-  assert.deepEqual(game.pickups, [medkit]);
+  assert.deepEqual(game.pickups, []);
   const events = game.drainEvents();
   const collected = events.filter(event => event.type === "gold");
   assert.equal(collected.length, 1);
@@ -429,6 +742,41 @@ test("wave collection waits for a full clear, collects every distant coin once, 
   game.update(1 / 60);
   assert.equal(profile.gold, 18);
   assert.equal(game.drainEvents().filter(event => event.type === "gold").length, 0);
+});
+
+test("unused medkits disappear at wave clear and cannot carry into the next wave", () => {
+  for (const [owned, enabled] of [[0, true], [1, true], [1, false]]) {
+    const profile = Core.createProfile();
+    profile.levels.wavePickup = owned;
+    profile.wavePickupEnabled = enabled;
+    const game = startedGame(profile);
+    game.beginWave(1);
+    game.spawnRemaining = 0;
+    game.nextBossAt = Infinity;
+    game.player.hp = 50;
+    const gold = { kind: "gold", x: 40, y: 40, value: 7, age: 0 };
+    game.pickups.push(gold, { kind: "health", x: 200, y: 200, age: 0 });
+    game.update(0.1);
+    assert.equal(game.waveActive, false);
+    assert.equal(game.player.hp, 62);
+    assert.equal(game.pickups.some(pickup => pickup.kind === "health"), false);
+    assert.equal(profile.gold, owned && enabled ? 7 : 0);
+    assert.deepEqual(game.pickups, owned && enabled ? [] : [gold]);
+    game.pickups.push({ kind: "health", x: 200, y: 200, age: 0 });
+    advanceFrames(game, 211);
+    assert.equal(game.wave, 2);
+    assert.equal(game.pickups.some(pickup => pickup.kind === "health"), false);
+    assert.deepEqual(game.pickups, owned && enabled ? [] : [gold]);
+  }
+});
+
+test("unused medkits disappear on the final wave before victory", () => {
+  const { game, boss } = finalBossEncounter();
+  game.pickups.push({ kind: "health", x: 200, y: 200, age: 0 });
+  game.killEnemy(boss);
+  game.update(1 / 60);
+  assert.equal(game.report.reason, "victory");
+  assert.equal(game.pickups.some(pickup => pickup.kind === "health"), false);
 });
 
 test("wave collection includes final kill loot and does not duplicate normally collected gold", () => {
@@ -597,7 +945,7 @@ test("wave collection supplies copied positions for every coin and banks before 
   game.update(1 / 60);
   assert.equal(profile.gold, 18);
   assert.equal(game.coins, 18);
-  assert.equal(game.pickups.length, 1);
+  assert.equal(game.pickups.length, 0);
   const event = game.drainEvents().find(event => event.type === "gold");
   assert.deepEqual(event.coins, [{ x: 40, y: 40 }, { x: Core.WIDTH - 40, y: Core.HEIGHT - 40 }]);
   first.x = 0;
@@ -886,14 +1234,120 @@ test("waves get stronger and advance after all aliens are killed", () => {
   assert.ok(game.enemies.length > 0);
 });
 
-test("wave 1 keeps its original health, movement, attack, and spawn pressure", () => {
+test("wave 1 spawns seventy-two enemies 3.75 times faster while keeping its original health, movement, and attack", () => {
   const settings = Core.waveSettings(1);
   assert.equal(settings.hp, 26);
   assert.equal(settings.speed, 61);
   assert.equal(settings.damage, 8);
-  assert.equal(settings.count, 12);
-  assert.equal(settings.spawnInterval, 0.64);
-  assert.equal(settings.gold, 2);
+  assert.equal(settings.count, 72);
+  assert.equal(settings.spawnInterval, 0.64 / 3.75);
+  assert.equal(settings.gold, 4);
+});
+
+test("every swarm wave has exactly triple its previously doubled enemy budget", () => {
+  for (const wave of [...Array.from({ length: Core.LEVEL_WAVES - 1 }, (_, index) => index + 1), 28, 100]) {
+    const settings = Core.waveSettings(wave);
+    assert.equal(settings.count, 3 * (2 * Math.min(120, 8 + wave * 4)));
+    assert.equal(settings.spawnInterval, Math.max(0.17, 0.64 - (wave - 1) * 0.028) / 3.75);
+  }
+  assert.equal(Core.waveSettings(8).count, 240);
+  assert.equal(Core.waveSettings(100).count, 720);
+});
+
+test("the spawner is 50 percent faster than the previous 2.5x cadence in every swarm wave", () => {
+  const duration = 0.9;
+  for (let wave = 1; wave < Core.LEVEL_WAVES; wave += 1) {
+    const game = startedGame();
+    game.beginWave(wave);
+    game.nextBossAt = Infinity;
+    game.fireTimer = 10000;
+    const previousInterval = Math.max(0.17, 0.64 - (wave - 1) * 0.028) / 2.5;
+    assert.ok(Math.abs(previousInterval / game.settings.spawnInterval - 1.5) < 1e-9);
+    const expectedSpawns = Math.floor(duration * 1.5 / previousInterval) + 1;
+    advanceFrames(game, Math.round(duration * 60));
+    assert.equal(game.enemies.length, expectedSpawns, `Spawn cadence at wave ${wave}`);
+    assert.equal(game.spawnRemaining, game.settings.count - expectedSpawns);
+    assert.equal(game.waveActive, true);
+  }
+});
+
+test("remaining enemies include queued and living enemies, but not dead enemies or fireballs", () => {
+  assert.equal(new Core.Game().enemiesRemaining, 0);
+  const game = startedGame();
+  assert.equal(game.enemiesRemaining, 0);
+  game.beginWave(1);
+  assert.equal(game.enemiesRemaining, 72);
+  game.fireTimer = 10000;
+  game.update(1 / 60);
+  assert.equal(game.spawnRemaining, 71);
+  assert.equal(game.enemiesRemaining, 72);
+  game.killEnemy(game.enemies[0]);
+  assert.equal(game.enemiesRemaining, 71);
+  game.fireballs.push(fireballAt(40, 40, Core.FIREBALL_SPEED));
+  assert.equal(game.enemiesRemaining, 71);
+  game.pause();
+  advanceFrames(game, 60);
+  assert.equal(game.enemiesRemaining, 71);
+  game.resume();
+  game.spawnEnemy(true);
+  assert.equal(game.enemiesRemaining, 72);
+  game.killEnemy(game.enemies.at(-1));
+  assert.equal(game.enemiesRemaining, 71);
+  game.beginWave(8);
+  assert.equal(game.enemiesRemaining, 240);
+  game.start(game.profile);
+  assert.equal(game.enemiesRemaining, 0);
+});
+
+test("the final wave counts one overlord remaining and reaches zero on victory", () => {
+  const { game, boss } = finalBossEncounter();
+  assert.equal(game.enemiesRemaining, 1);
+  game.killEnemy(boss);
+  assert.equal(game.enemiesRemaining, 0);
+  game.update(1 / 60);
+  assert.equal(game.report.reason, "victory");
+  assert.equal(game.enemiesRemaining, 0);
+});
+
+test("the spawner delivers the full tripled budget and waits for the last enemy before clearing", () => {
+  for (let wave = 1; wave < Core.LEVEL_WAVES; wave += 1) {
+    const game = startedGame();
+    game.beginWave(wave);
+    game.nextBossAt = Infinity;
+    game.fireTimer = 10000;
+    game.player.invulnerable = 10000;
+    let spawned = 0;
+    const maxFrames = Math.ceil(Core.waveSettings(wave).count * Core.waveSettings(wave).spawnInterval * 10) + 10;
+    for (let frame = 0; frame < maxFrames && game.spawnRemaining > 0; frame += 1) {
+      game.enemies = [];
+      game.update(0.1);
+      spawned += game.enemies.length;
+    }
+    assert.equal(game.spawnRemaining, 0);
+    assert.equal(spawned, Core.waveSettings(wave).count);
+    assert.equal(game.waveActive, true);
+    game.enemies = [];
+    game.update(0.1);
+    assert.equal(game.waveActive, false);
+    assert.equal(game.wavesCleared, wave);
+  }
+});
+
+test("expanded swarms queue excess enemies at the live cap instead of losing their spawn budget", () => {
+  const game = startedGame();
+  game.beginWave(8);
+  game.nextBossAt = Infinity;
+  game.fireTimer = 10000;
+  game.enemies = Array.from({ length: 85 }, () => enemyAt(game, 40, 40, 1000000));
+  game.update(0.1);
+  assert.equal(game.spawnRemaining, 240);
+  assert.equal(game.enemiesRemaining, 325);
+  game.enemies.pop();
+  game.update(0.1);
+  assert.equal(game.enemies.length, 85);
+  assert.equal(game.spawnRemaining, 239);
+  assert.equal(game.enemiesRemaining, 324);
+  assert.equal(game.waveActive, true);
 });
 
 test("health, speed, attack, and normal-alien gold increase every wave with a steeper curve", () => {
@@ -915,9 +1369,9 @@ test("health, speed, attack, and normal-alien gold increase every wave with a st
       return { hp, speed, damage, gold };
     }),
     [
-      { hp: 34, speed: 67, damage: 10, gold: 3 },
-      { hp: 74, speed: 85, damage: 17, gold: 6 },
-      { hp: 276, speed: 115, damage: 41, gold: 21 },
+      { hp: 34, speed: 67, damage: 10, gold: 6 },
+      { hp: 74, speed: 85, damage: 17, gold: 12 },
+      { hp: 276, speed: 115, damage: 41, gold: 42 },
     ],
   );
 });
@@ -940,14 +1394,38 @@ test("stronger enemy types drop higher-value gold using their actual stats", () 
     rewards[name] = game.pickups.find(pickup => pickup.kind === "gold").value;
     assert.equal(rewards[name], Core.enemyGold(enemy));
   }
-  assert.equal(rewards.drone, 2);
-  assert.equal(rewards.chicken, 4);
-  assert.equal(rewards.boss, 18);
-  assert.equal(rewards.wave4drone, 5);
-  assert.equal(rewards.brute, 10);
+  assert.equal(rewards.drone, 4);
+  assert.equal(rewards.chicken, 8);
+  assert.equal(rewards.boss, 36);
+  assert.equal(rewards.wave4drone, 10);
+  assert.equal(rewards.brute, 20);
   assert.ok(rewards.boss > rewards.chicken);
   assert.ok(rewards.chicken > rewards.drone);
   assert.ok(rewards.brute > rewards.wave4drone);
+});
+
+test("every enemy type drops exactly twice its previously rounded gold value in every wave", () => {
+  const types = new Set();
+  for (let wave = 1; wave <= Core.LEVEL_WAVES; wave += 1) {
+    for (const [roll, boss, finalBoss] of [[0.1, false, false], [0.3, false, false], [0.5, false, false], [0.7, false, false], [0.9, false, false], [0.5, true, false], ...(wave === Core.LEVEL_WAVES ? [[0.5, true, true]] : [])]) {
+      const game = startedGame();
+      game.beginWave(wave);
+      game.enemies = [];
+      game.random = () => roll;
+      game.spawnEnemy(boss, { finalBoss });
+      const enemy = game.enemies[0];
+      types.add(enemy.type);
+      const strength = enemy.maxHp / 26 * Math.max(1, enemy.speed / 61) * Math.max(1, enemy.damage / 8);
+      const previousGold = Math.max(1, Math.ceil(2 * Math.sqrt(strength)));
+      const expected = Math.min(Core.MAX_GOLD, previousGold * 2);
+      assert.equal(Core.enemyGold(enemy), expected, `${enemy.type} at wave ${wave}`);
+      game.killEnemy(enemy);
+      assert.equal(game.kills, 1);
+      if (finalBoss) assert.equal(game.profile.gold, expected);
+      else assert.equal(game.pickups.find(pickup => pickup.kind === "gold").value, expected);
+    }
+  }
+  assert.deepEqual([...types].sort(), ["boss", "brute", "chicken", "drone", "overlord", "runner", "skeleton"]);
 });
 
 test("health, speed, and attack buffs each increase gold rewards", () => {
@@ -965,12 +1443,12 @@ test("wounded enemies retain their reward even if the current wave changes", () 
   const enemy = game.enemies[0];
   game.hitEnemy(enemy, enemy.hp - 1);
   assert.equal(enemy.hp, 1);
-  game.beginWave(10);
+  game.beginWave(8);
   game.killEnemy(enemy);
   game.killEnemy(enemy);
   const gold = game.pickups.filter(pickup => pickup.kind === "gold");
   assert.equal(gold.length, 1);
-  assert.equal(gold[0].value, 2);
+  assert.equal(gold[0].value, 4);
   assert.equal(game.kills, 1);
 });
 
@@ -982,11 +1460,11 @@ test("chicken chain kills award full strength-based rewards that can be collecte
   second.y = chicken.y;
   game.killEnemy(chicken);
   assert.equal(game.kills, 2);
-  assert.deepEqual(game.pickups.filter(pickup => pickup.kind === "gold").map(pickup => pickup.value), [4, 4]);
+  assert.deepEqual(game.pickups.filter(pickup => pickup.kind === "gold").map(pickup => pickup.value), [8, 8]);
   game.stats.pickup = Core.WIDTH;
   for (let i = 0; i < 30; i += 1) game.update(0.1);
-  assert.equal(game.profile.gold, 8);
-  assert.equal(game.coins, 8);
+  assert.equal(game.profile.gold, 16);
+  assert.equal(game.coins, 16);
   assert.equal(Core.isValidProfile(game.profile), true);
 });
 
@@ -1000,7 +1478,7 @@ test("high-value gold drops respect the wallet limit and remain valid save data"
   boss.x = game.player.x;
   boss.y = game.player.y;
   game.killEnemy(boss);
-  assert.equal(game.pickups[0].value, 18);
+  assert.equal(game.pickups[0].value, 36);
   game.update(1 / 60);
   assert.equal(profile.gold, Core.MAX_GOLD);
   assert.equal(game.coins, 1);
@@ -1076,9 +1554,10 @@ test("skeletons approach from afar, retreat up close, and hold their firing dist
   assert.deepEqual({ x: skeleton.x, y: skeleton.y }, position);
 });
 
-test("skeletons telegraph each fireball for 0.45 seconds and fire every 2 seconds", () => {
+test("skeletons telegraph each fireball for 0.45 seconds and fire twice as fast at one-second intervals", () => {
+  assert.equal(Core.SKELETON_FIRE_INTERVAL, 1);
   const { game, skeleton } = skeletonEncounter();
-  advanceFrames(game, 92);
+  advanceFrames(game, 32);
   assert.equal(skeleton.castUntil, null);
   assert.equal(game.fireballs.length, 0);
   advanceFrames(game, 1);
@@ -1096,7 +1575,7 @@ test("skeletons telegraph each fireball for 0.45 seconds and fire every 2 second
   assert.ok(Math.abs(Math.hypot(ball.vx, ball.vy) - Core.FIREBALL_SPEED) < 1e-9);
   assert.ok(ball.vx < 0);
   assert.equal(game.drainEvents().filter(event => event.type === "fireballShot").length, 1);
-  advanceFrames(game, 119);
+  advanceFrames(game, 59);
   assert.equal(game.drainEvents().filter(event => event.type === "fireballShot").length, 0);
   advanceFrames(game, 1);
   assert.equal(game.drainEvents().filter(event => event.type === "fireballShot").length, 1);
@@ -1104,7 +1583,7 @@ test("skeletons telegraph each fireball for 0.45 seconds and fire every 2 second
 
 test("skeletons aim at the player's position when firing, not when charging", () => {
   const { game, skeleton } = skeletonEncounter();
-  advanceFrames(game, 93);
+  advanceFrames(game, 33);
   game.player.y += 80;
   advanceFrames(game, 27);
   const ball = game.fireballs[0];
@@ -1115,7 +1594,7 @@ test("skeletons aim at the player's position when firing, not when charging", ()
 
 test("fireballs travel straight and can be dodged instead of homing on the player", () => {
   const { game } = skeletonEncounter();
-  advanceFrames(game, 120);
+  advanceFrames(game, 60);
   const ball = game.fireballs[0];
   const velocity = { vx: ball.vx, vy: ball.vy };
   const y = ball.y;
@@ -1145,7 +1624,7 @@ test("skeletons do not fire outside range and give a full warning when entering 
 
 test("leaving a skeleton's attack range cancels its current cast", () => {
   const { game, skeleton } = skeletonEncounter();
-  advanceFrames(game, 93);
+  advanceFrames(game, 33);
   assert.notEqual(skeleton.castUntil, null);
   skeleton.speed = 0;
   game.player.x = skeleton.x - Core.SKELETON_ATTACK_RANGE - 10;
@@ -1210,13 +1689,14 @@ test("chicken explosions can kill a casting skeleton and award its full gold", (
 
 test("fired fireballs remain dangerous after the skeleton dies and delay wave clear", () => {
   const { game, skeleton } = skeletonEncounter();
-  advanceFrames(game, 120);
+  advanceFrames(game, 60);
   const ball = game.fireballs[0];
   const x = ball.x;
   game.killEnemy(skeleton);
   game.update(1 / 60);
   assert.ok(ball.x < x);
   assert.equal(game.enemies.length, 0);
+  assert.equal(game.enemiesRemaining, 0);
   assert.equal(game.waveActive, true);
   advanceFrames(game, 60);
   assert.equal(game.player.hp, game.player.maxHp - skeleton.damage + game.player.maxHp * 0.12);
@@ -1295,7 +1775,7 @@ test("lethal fireballs end the run once, clear pending shots, and stop further d
 
 test("pausing freezes skeleton casts and fireballs; retreat and restart discard them", () => {
   const { game, skeleton } = skeletonEncounter();
-  advanceFrames(game, 93);
+  advanceFrames(game, 33);
   const castUntil = skeleton.castUntil;
   const time = game.time;
   game.pause();
@@ -1321,7 +1801,7 @@ test("pausing freezes skeleton casts and fireballs; retreat and restart discard 
 
 test("restarting a live run discards incoming fireballs and old skeleton casts", () => {
   const { game, skeleton } = skeletonEncounter();
-  advanceFrames(game, 93);
+  advanceFrames(game, 33);
   assert.notEqual(skeleton.castUntil, null);
   game.shootFireball(skeleton);
   const ball = game.fireballs[0];
@@ -1356,7 +1836,7 @@ test("bosses spawn at 15, 30, and 45 seconds, never before the first interval", 
 });
 
 test("boss health and speed preserve the current 20x and 4x tuning", () => {
-  for (const wave of [1, 4, 12]) {
+  for (const wave of [1, 4, 8]) {
     const game = startedGame();
     game.beginWave(wave);
     game.spawnEnemy(true);
@@ -1441,6 +1921,377 @@ test("bosses are auto-targeted, take bullet damage, drop gold, and block wave co
   assert.equal(game.enemies.length, 0);
   assert.equal(game.waveActive, false);
   assert.ok(game.countdown > 0);
+});
+
+test("Level 1 has eight swarm waves and exactly one giant boss on wave nine", () => {
+  assert.equal(Core.LEVEL_WAVES, 9);
+  const game = startedGame();
+  for (let wave = 1; wave < Core.LEVEL_WAVES; wave += 1) {
+    game.beginWave(wave);
+    assert.equal(game.spawnRemaining, Core.waveSettings(wave).count);
+    assert.equal(game.enemies.length, 0);
+  }
+  game.beginWave(Core.LEVEL_WAVES);
+  assert.equal(game.spawnRemaining, 0);
+  assert.equal(game.enemies.length, 1);
+  assert.equal(game.enemies[0].type, "overlord");
+  const settings = Core.waveSettings(Core.LEVEL_WAVES);
+  const boss = game.enemies[0];
+  assert.equal(boss.maxHp, settings.hp * 20 * 30);
+  assert.equal(boss.hp, boss.maxHp);
+  assert.equal(boss.speed, 210);
+  assert.ok(boss.speed < Core.getStats(Core.createProfile()).speed);
+  assert.ok(boss.radius > 36 * 2);
+  assert.equal(boss.damage, settings.damage);
+  assert.ok(boss.x >= boss.radius && boss.x <= Core.WIDTH - boss.radius);
+  assert.ok(boss.y >= boss.radius && boss.y <= Core.HEIGHT - boss.radius);
+  assert.equal(game.drainEvents().filter(event => event.type === "boss" && event.finalBoss).length, 1);
+  game.spawnEnemy(true);
+  assert.equal(boss.maxHp, game.enemies.at(-1).maxHp * Core.FINAL_BOSS_HEALTH_MULTIPLIER);
+  for (const wave of [0, 10, 13, 14, 1.5, Infinity]) assert.throws(() => game.beginWave(wave), RangeError);
+});
+
+test("the wave-8 countdown leads into the finale without timed boss reinforcements", () => {
+  const game = startedGame();
+  game.beginWave(8);
+  game.spawnRemaining = 0;
+  game.time = 14.8;
+  game.update(0.1);
+  assert.equal(game.wavesCleared, 8);
+  advanceFrames(game, 211);
+  assert.equal(game.wave, 9);
+  assert.deepEqual(game.enemies.map(enemy => enemy.type), ["overlord"]);
+  game.player.invulnerable = 10000;
+  game.fireTimer = 10000;
+  advanceFrames(game, 2700);
+  assert.equal(game.wave, 9);
+  assert.deepEqual(game.enemies.map(enemy => enemy.type), ["overlord"]);
+  assert.equal(game.drainEvents().filter(event => event.type === "boss" && !event.finalBoss).length, 0);
+});
+
+test("even an unupgraded soldier can outrun the final boss's grounded chase", () => {
+  const game = startedGame();
+  game.beginWave(Core.LEVEL_WAVES);
+  const boss = game.enemies[0];
+  boss.x = 350;
+  boss.y = game.player.y;
+  boss.nextJumpAt = 10000;
+  game.fireTimer = 10000;
+  const before = game.player.x - boss.x;
+  advanceFrames(game, 60, { x: 1, y: 0 });
+  assert.ok(Math.abs((game.player.x - boss.x) - before - (game.stats.speed - boss.speed)) < 1e-8);
+  assert.equal(game.damageTaken, 0);
+});
+
+test("the final boss warns, leaps to a fixed target, slams once, and recovers", () => {
+  const { game, boss } = finalBossEncounter();
+  game.update(1 / 60);
+  assert.equal(boss.jump.phase, "windup");
+  assert.equal(boss.jump.targetX, game.player.x);
+  assert.equal(boss.jump.targetY, game.player.y);
+  const startX = boss.x;
+  advanceFrames(game, JUMP_WINDUP_FRAMES - 1);
+  assert.equal(boss.jump.phase, "windup");
+  assert.equal(boss.x, startX);
+  assert.equal(game.damageTaken, 0);
+  game.update(1 / 60);
+  assert.equal(boss.jump.phase, "airborne");
+  advanceFrames(game, JUMP_FLIGHT_FRAMES - 1);
+  assert.equal(boss.jump.phase, "airborne");
+  assert.equal(game.damageTaken, 0);
+  game.update(1 / 60);
+  assert.equal(boss.jump.phase, "recovery");
+  assert.equal(boss.x, boss.jump.targetX);
+  assert.equal(boss.y, boss.jump.targetY);
+  assert.equal(game.damageTaken, boss.damage);
+  const events = game.drainEvents();
+  for (const type of ["bossWindup", "bossLeap", "bossSlam", "hurt"]) {
+    assert.equal(events.filter(event => event.type === type).length, 1);
+  }
+  game.player.y = 150;
+  advanceFrames(game, 38);
+  assert.equal(boss.jump.phase, "recovery");
+  game.update(1 / 60);
+  assert.equal(boss.jump, null);
+  advanceFrames(game, 179);
+  assert.equal(boss.jump, null);
+  game.update(1 / 60);
+  assert.equal(boss.jump.phase, "windup");
+  assert.equal(game.damageTaken, boss.damage);
+});
+
+test("moving away from the marked landing zone dodges the jump without homing", () => {
+  const { game, boss } = finalBossEncounter();
+  game.update(1 / 60);
+  const target = { x: boss.jump.targetX, y: boss.jump.targetY };
+  advanceFrames(game, JUMP_SLAM_FRAMES, { x: 0, y: -1 });
+  assert.equal(boss.jump.phase, "recovery");
+  assert.equal(boss.x, target.x);
+  assert.equal(boss.y, target.y);
+  assert.equal(game.player.hp, game.player.maxHp);
+  assert.equal(game.damageTaken, 0);
+  assert.equal(game.drainEvents().filter(event => event.type === "bossSlam").length, 1);
+});
+
+test("the final boss reaches 900 units in a 0.25-second leap after a shorter warning", () => {
+  assert.equal(Core.FINAL_BOSS_JUMP_RANGE, 900);
+  assert.equal(Core.FINAL_BOSS_JUMP_WINDUP, 0.5);
+  assert.equal(Core.FINAL_BOSS_JUMP_DURATION, 0.25);
+  const { game, boss } = finalBossEncounter();
+  game.player.x = 450;
+  game.player.invulnerable = 10000;
+  boss.x = game.player.x + Core.FINAL_BOSS_JUMP_RANGE;
+  const startX = boss.x;
+  game.update(1 / 60);
+  assert.equal(boss.jump.phase, "windup");
+  advanceFrames(game, JUMP_WINDUP_FRAMES);
+  assert.equal(boss.jump.phase, "airborne");
+  const elapsedFrames = Math.floor(JUMP_FLIGHT_FRAMES / 2);
+  advanceFrames(game, elapsedFrames);
+  const expectedTravel = Core.FINAL_BOSS_JUMP_RANGE * elapsedFrames / JUMP_FLIGHT_FRAMES;
+  assert.ok(Math.abs((startX - boss.x) - expectedTravel) < 1e-8);
+  advanceFrames(game, JUMP_FLIGHT_FRAMES - elapsedFrames);
+  assert.equal(boss.jump.phase, "recovery");
+  assert.equal(boss.x, game.player.x);
+  assert.equal(startX - boss.x, 900);
+});
+
+test("the tighter jump window rewards a quick reaction but catches a delayed dodge", () => {
+  for (const [reactionFrames, hit] of [[12, false], [18, true]]) {
+    const { game, boss } = finalBossEncounter();
+    game.update(1 / 60);
+    advanceFrames(game, reactionFrames);
+    advanceFrames(game, JUMP_SLAM_FRAMES - reactionFrames, { x: 0, y: -1 });
+    assert.equal(boss.jump.phase, "recovery");
+    assert.equal(game.damageTaken, hit ? boss.damage : 0);
+    assert.equal(game.drainEvents().filter(event => event.type === "bossSlam").length, 1);
+  }
+});
+
+test("final boss jumps only begin in range and landing circles include the soldier's body", () => {
+  const { game, boss } = finalBossEncounter();
+  game.player.x = Core.WIDTH - 100;
+  boss.x = 100;
+  game.update(1 / 60);
+  assert.equal(boss.jump, null);
+  assert.equal(game.drainEvents().some(event => event.type === "bossWindup"), false);
+  for (const offset of [Core.FINAL_BOSS_SLAM_RADIUS + 17, Core.FINAL_BOSS_SLAM_RADIUS + 17.01]) {
+    const encounter = finalBossEncounter();
+    encounter.game.update(1 / 60);
+    encounter.game.player.x += offset;
+    advanceFrames(encounter.game, JUMP_SLAM_FRAMES);
+    assert.equal(encounter.boss.jump.phase, "recovery");
+    assert.equal(encounter.game.damageTaken, offset === Core.FINAL_BOSS_SLAM_RADIUS + 17 ? encounter.boss.damage : 0);
+  }
+});
+
+test("final boss landing targets stay in bounds near every arena edge", () => {
+  for (const [x, y] of [[27, 27], [Core.WIDTH - 27, 27], [27, Core.HEIGHT - 27], [Core.WIDTH - 27, Core.HEIGHT - 27]]) {
+    const { game, boss } = finalBossEncounter();
+    game.player.x = x;
+    game.player.y = y;
+    boss.x = Core.WIDTH / 2;
+    boss.y = Core.HEIGHT / 2;
+    boss.nextJumpAt = 0;
+    boss.x = x < Core.WIDTH / 2 ? 250 : Core.WIDTH - 250;
+    boss.y = y < Core.HEIGHT / 2 ? 250 : Core.HEIGHT - 250;
+    game.update(1 / 60);
+    assert.equal(boss.jump.phase, "windup");
+    assert.ok(boss.jump.targetX >= boss.radius && boss.jump.targetX <= Core.WIDTH - boss.radius);
+    assert.ok(boss.jump.targetY >= boss.radius && boss.jump.targetY <= Core.HEIGHT - boss.radius);
+    advanceFrames(game, JUMP_SLAM_FRAMES);
+    assert.equal(boss.x, boss.jump.targetX);
+    assert.equal(boss.y, boss.jump.targetY);
+  }
+});
+
+test("pause freezes the final boss's warning and flight; restart discards the encounter", () => {
+  const { game, boss } = finalBossEncounter();
+  game.update(1 / 60);
+  for (const count of [0, JUMP_WINDUP_FRAMES + Math.floor(JUMP_FLIGHT_FRAMES / 2)]) {
+    advanceFrames(game, count);
+    const snapshot = JSON.parse(JSON.stringify(boss));
+    const time = game.time;
+    game.pause();
+    advanceFrames(game, 300, { x: 1, y: 0 });
+    assert.equal(game.time, time);
+    assert.deepEqual(boss, snapshot);
+    game.resume();
+  }
+  game.finish("retreated");
+  const snapshot = JSON.parse(JSON.stringify(boss));
+  advanceFrames(game, 120);
+  assert.deepEqual(boss, snapshot);
+  game.start(game.profile);
+  assert.equal(game.wave, 0);
+  assert.equal(game.bulletsFired, 0);
+  assert.equal(game.damageTaken, 0);
+  assert.equal(game.wavesCleared, 0);
+  assert.equal(game.report, null);
+  assert.equal(game.enemies.length, 0);
+  advanceFrames(game, 97);
+  assert.equal(game.wave, 1);
+});
+
+test("killing the final boss during windup or flight prevents its remaining attacks", () => {
+  for (const count of [1, 1 + JUMP_WINDUP_FRAMES + Math.floor(JUMP_FLIGHT_FRAMES / 2)]) {
+    const { game, boss } = finalBossEncounter();
+    advanceFrames(game, count);
+    game.drainEvents();
+    game.hitEnemy(boss, boss.maxHp);
+    game.hitEnemy(boss, boss.maxHp);
+    game.update(1 / 60);
+    assert.equal(game.phase, "ended");
+    assert.equal(game.report.reason, "victory");
+    assert.equal(game.report.kills, 1);
+    assert.equal(game.damageTaken, 0);
+    assert.equal(game.report.gold, Core.enemyGold(boss));
+    assert.equal(game.drainEvents().some(event => ["bossLeap", "bossSlam"].includes(event.type)), false);
+  }
+});
+
+test("automatic bullets can defeat the final boss and finalize its kill and shot statistics", () => {
+  const { game, boss } = finalBossEncounter(120);
+  boss.hp = game.stats.damage;
+  game.fireTimer = 0;
+  game.update(1 / 60);
+  assert.equal(game.phase, "ended");
+  assert.equal(game.report.reason, "victory");
+  assert.equal(game.report.kills, 1);
+  assert.equal(game.report.bulletsFired, 1);
+  assert.equal(game.report.damageTaken, 0);
+  assert.equal(game.report.gold, Core.enemyGold(boss));
+  assert.equal(game.drainEvents().some(event => event.type === "bossWindup"), false);
+});
+
+test("a lethal landing loses the run rather than granting victory", () => {
+  const { game, boss } = finalBossEncounter();
+  game.player.hp = 10;
+  advanceFrames(game, 1 + JUMP_SLAM_FRAMES);
+  assert.equal(game.phase, "ended");
+  assert.equal(game.report.reason, "overrun");
+  assert.equal(game.report.damageTaken, 10);
+  assert.equal(game.report.wavesCleared, 0);
+  assert.ok(boss.hp > 0);
+  advanceFrames(game, 600);
+  assert.equal(game.report.reason, "overrun");
+});
+
+test("all nine wave clears end in a single victory without wave ten", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  const game = startedGame(profile);
+  for (let wave = 1; wave <= Core.LEVEL_WAVES; wave += 1) {
+    game.beginWave(wave);
+    game.spawnRemaining = 0;
+    if (wave < Core.LEVEL_WAVES) game.enemies.push(enemyAt(game, 40, 40));
+    game.shoot(game.enemies[0]);
+    game.bullets = [];
+    game.player.invulnerable = 0;
+    game.hurt(1, game.player.x, game.player.y);
+    for (const enemy of game.enemies) game.killEnemy(enemy);
+    game.update(1 / 60);
+    assert.equal(game.wavesCleared, wave);
+    assert.equal(game.phase, wave === Core.LEVEL_WAVES ? "ended" : "running");
+  }
+  assert.equal(game.report.reason, "victory");
+  assert.equal(game.report.level, 1);
+  assert.equal(game.report.wave, 9);
+  assert.equal(game.report.wavesCleared, 9);
+  assert.equal(game.report.kills, 9);
+  assert.equal(game.report.bulletsFired, 9);
+  assert.equal(game.report.damageTaken, 9);
+  assert.equal(game.report.gold, profile.gold);
+  assert.equal(game.report.gold, game.coins);
+  assert.equal(game.pickups.filter(pickup => pickup.kind === "gold").length, 0);
+  const report = { ...game.report };
+  const gold = profile.gold;
+  const runs = profile.totalRuns;
+  advanceFrames(game, 3600);
+  game.finish("victory");
+  assert.deepEqual(game.report, report);
+  assert.equal(game.wave, 9);
+  assert.equal(game.countdown, 0);
+  assert.equal(game.waveActive, false);
+  assert.equal(profile.gold, gold);
+  assert.equal(profile.totalRuns, runs);
+  assert.equal(game.drainEvents().filter(event => event.type === "ended").length, 1);
+  assert.equal(Core.isValidProfile(JSON.parse(JSON.stringify(profile))), true);
+});
+
+test("the final boss bounty is banked once even with automatic wave pickup off or a full wallet", () => {
+  for (const bank of [0, Core.MAX_GOLD - 2, Core.MAX_GOLD]) {
+    const profile = Core.createProfile();
+    profile.gold = bank;
+    profile.wavePickupEnabled = false;
+    const { game, boss } = finalBossEncounter(300, profile);
+    const reward = Math.min(Core.MAX_GOLD - bank, Core.enemyGold(boss));
+    game.killEnemy(boss);
+    game.killEnemy(boss);
+    assert.equal(profile.gold, bank + reward);
+    assert.equal(game.coins, reward);
+    assert.equal(game.pickups.some(pickup => pickup.kind === "gold"), false);
+    game.update(1 / 60);
+    assert.equal(game.report.reason, "victory");
+    assert.equal(game.report.gold, reward);
+  }
+});
+
+test("victory waits for lingering fireballs rather than finishing while shots remain dangerous", () => {
+  const { game, boss } = finalBossEncounter();
+  game.killEnemy(boss);
+  game.fireballs.push(fireballAt(40, 40, 0, 0, 10, 0.1));
+  game.update(1 / 60);
+  assert.equal(game.phase, "running");
+  advanceFrames(game, 6);
+  assert.equal(game.phase, "ended");
+  assert.equal(game.report.reason, "victory");
+});
+
+test("bullets fired count individual projectiles including two- and three-barrel shots", () => {
+  for (const level of [0, 1, 2]) {
+    const profile = Core.createProfile();
+    profile.levels.bullets = level;
+    const game = startedGame(profile);
+    const target = enemyAt(game, game.player.x + 200, game.player.y, 10000);
+    game.enemies.push(target);
+    advanceFrames(game, 60);
+    const shots = game.drainEvents().filter(event => event.type === "shot").length;
+    assert.ok(shots > 0);
+    assert.equal(game.bulletsFired, shots * (level + 1));
+    const fired = game.bulletsFired;
+    game.pause();
+    advanceFrames(game, 60);
+    assert.equal(game.bulletsFired, fired);
+    game.finish("retreated");
+    assert.equal(game.report.bulletsFired, fired);
+    game.start(profile);
+    assert.equal(game.bulletsFired, 0);
+  }
+});
+
+test("damage taken counts actual health lost, excludes blocked hits, and is not reduced by healing", () => {
+  const game = startedGame();
+  game.hurt(13.5, game.player.x, game.player.y);
+  assert.equal(game.damageTaken, 13.5);
+  game.hurt(50, game.player.x, game.player.y);
+  assert.equal(game.damageTaken, 13.5);
+  game.player.invulnerable = 0;
+  game.pickups.push({ kind: "health", x: game.player.x, y: game.player.y, age: 0 });
+  game.update(1 / 60);
+  assert.equal(game.player.hp, 100);
+  assert.equal(game.damageTaken, 13.5);
+  game.hurt(7.25, game.player.x, game.player.y);
+  assert.equal(game.damageTaken, 20.75);
+  game.player.invulnerable = 0;
+  game.pause();
+  game.hurt(1000, game.player.x, game.player.y);
+  assert.equal(game.damageTaken, 20.75);
+  game.resume();
+  game.hurt(1000, game.player.x, game.player.y);
+  assert.equal(game.report.damageTaken, 113.5);
+  game.hurt(1000, game.player.x, game.player.y);
+  assert.equal(game.damageTaken, 113.5);
 });
 
 test("normal waves spawn chickens without changing guaranteed boss spawns", () => {

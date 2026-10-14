@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#08121e">
-  <meta name="description" content="An offline space-survival game. Dodge aliens, collect gold, and upgrade your soldier between runs.">
+  <meta name="description" content="An offline space-survival game. Survive Level 1's 9 waves, defeat the final overlord, and upgrade your soldier between runs.">
   <title>Space Survivor</title>
   <link rel="stylesheet" href="styles.css">
   <script src="game-core.js" defer></script>
@@ -33,23 +33,35 @@
     <section class="arena-shell" aria-label="Battlefield">
       <canvas id="arena" width="1440" height="900" tabindex="0" aria-label="Space Survivor arena. Use WASD or arrow keys to move. Your soldier shoots automatically."></canvas>
       <div class="arena-hud">
-        <div class="wave-badge"><span class="status-dot"></span><div><span class="label" id="missionStatus">AWAITING DEPLOYMENT</span><strong id="waveLabel">SECTOR 07</strong></div></div>
+        <div class="wave-badge">
+          <span class="status-dot"></span>
+          <div>
+            <span class="label" id="missionStatus">9 WAVES / ONE OVERLORD</span>
+            <span id="waveEnemyCounter" class="label enemy-count" hidden>ENEMIES LEFT: <b id="enemiesLeft">0</b></span>
+            <strong id="waveLabel">LEVEL 1</strong>
+          </div>
+        </div>
         <div class="health">
-          <div class="health-heading"><span>SUIT INTEGRITY</span><strong id="healthLabel">100 / 100</strong></div>
+          <div class="health-heading"><span>SUIT INTEGRITY<span class="health-regen">REGEN: <span id="healthRegenStat">0</span> HP/s</span></span><strong id="healthLabel">100 / 100</strong></div>
           <div id="healthBar" class="health-track" role="progressbar" aria-label="Health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><div id="healthFill"></div></div>
+        </div>
+        <div id="bossHud" class="boss-hud" hidden>
+          <div class="health-heading"><strong>FINAL OVERLORD</strong><span id="bossHealthLabel"></span></div>
+          <div id="bossHealthBar" class="health-track" role="progressbar" aria-label="Final overlord health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><div id="bossHealthFill"></div></div>
+          <p id="bossAction">CHASING / KEEP MOVING</p>
         </div>
         <button id="pauseButton" class="arena-button" type="button" disabled>Pause <kbd>P</kbd></button>
       </div>
       <div id="waveToast" class="wave-toast" role="status" hidden></div>
       <div id="joystick" class="joystick" aria-label="Drag to move your soldier"><div id="joystickThumb"></div></div>
-      <span class="sector-label">EXTRACTION UNAVAILABLE / SURVIVE</span>
+      <span class="sector-label">LEVEL 1 / SURVIVE 9 WAVES / DEFEAT THE OVERLORD</span>
     </section>
 
     <section class="telemetry" aria-label="Run statistics">
       <div><span class="label">RUN GOLD</span><strong class="gold-text" id="runGold">0</strong></div>
       <div><span class="label">ALIENS DOWN</span><strong id="kills">0</strong></div>
       <div><span class="label">TIME ALIVE</span><strong id="runTime">00:00</strong></div>
-      <div><span class="label">BULLET DAMAGE</span><strong id="damageStat">18</strong></div>
+      <div><span class="label">BULLET DAMAGE</span><strong id="damageStat">18</strong><span class="unit">Crit: <span id="critChanceStat">0%</span></span></div>
       <div><span class="label">FIRE RATE</span><strong id="fireRateStat">2.1<span class="unit"> / s</span></strong></div>
       <div><span class="label">WEAPON RANGE</span><strong id="rangeStat">360</strong></div>
     </section>
@@ -63,17 +75,34 @@
   </main>
 
   <dialog id="menuDialog" class="panel menu-panel" aria-labelledby="menuTitle">
-    <p class="eyebrow accent">SURVIVAL PROTOCOL / ONLINE</p>
-    <h2 id="menuTitle">One soldier.<br><span>Endless waves.</span></h2>
+    <p class="eyebrow accent">SELECT LEVEL / SURVIVAL PROTOCOL</p>
+    <h2 id="menuTitle">One soldier.<br><span>Nine waves.</span></h2>
+    <fieldset id="levelSelect" class="level-select">
+      <legend>Select your level</legend>
+      <div class="level-options">
+        <label class="level-option">
+          <span class="level-option-heading"><input id="level1" type="radio" name="startLevel" value="1" checked autofocus><strong>Level 1</strong></span>
+          <span class="level-caption">9 waves</span>
+        </label>
+        <label class="level-option">
+          <span class="level-option-heading"><input id="level2" type="radio" name="startLevel" value="2" disabled><strong>Level 2</strong></span>
+          <span class="level-caption">comming soon</span>
+        </label>
+        <label class="level-option">
+          <span class="level-option-heading"><input id="level3" type="radio" name="startLevel" value="3" disabled><strong>Level 3</strong></span>
+          <span class="level-caption">comming soon</span>
+        </label>
+      </div>
+    </fieldset>
+    <div class="button-row">
+      <button id="startButton" class="primary-button" type="button">Deploy Level 1 <span aria-hidden="true">&rarr;</span></button>
+      <button id="menuShopButton" class="secondary-button" type="button">Open armory</button>
+    </div>
     <p class="intro">Your weapon auto-fires at the closest enemy inside its gold range circle. Upgrade its reach between runs. Chickens explode after a 1.5-second proximity fuse or immediately when killed. Use their blasts against the swarm. Skeletons attack from range with dodgeable fireballs; keep moving.</p>
     <div class="mission-steps">
-      <div><span>01</span><p><strong>Survive the swarm</strong>Tougher waves, plus a boss alien every 15 seconds.</p></div>
+      <div><span>01</span><p><strong>Survive 8 swarm waves</strong>Tougher aliens, plus a boss every 15 seconds until the finale.</p></div>
       <div><span>02</span><p><strong>Grab the gold</strong>Run near dropped coins to pull them in.</p></div>
-      <div><span>03</span><p><strong>Come back stronger</strong>Spend saved gold on permanent upgrades.</p></div>
-    </div>
-    <div class="button-row">
-      <button id="startButton" class="primary-button" type="button" autofocus>Deploy soldier <span aria-hidden="true">&rarr;</span></button>
-      <button id="menuShopButton" class="secondary-button" type="button">Open armory</button>
+      <div><span>03</span><p><strong>Defeat the wave 9 overlord</strong>A giant with 30 times a normal boss's health. It is fast, but you can outrun it. Dodge its marked jump landings, win Level 1, and spend saved gold on permanent upgrades.</p></div>
     </div>
     <p class="panel-footnote">WASD / arrow keys to move. P / Esc to pause. Touch controls on mobile.<br>No downloads, accounts, or internet connection required.</p>
   </dialog>
@@ -88,6 +117,25 @@
     </div>
   </dialog>
 
+  <dialog id="victoryDialog" class="panel victory-panel" aria-labelledby="victoryTitle" aria-describedby="victoryIntro">
+    <p class="eyebrow accent">LEVEL 1 / MISSION ACCOMPLISHED</p>
+    <h2 id="victoryTitle">Level 1 complete.</h2>
+    <p id="victoryIntro" class="intro">All 9 waves cleared. The final overlord is down. Your whole-run record is below, and collected rewards are safely banked.</p>
+    <div class="run-summary victory-summary" aria-label="Complete run statistics">
+      <div><span class="label">ALIENS KILLED</span><strong id="victoryKills">0</strong></div>
+      <div><span class="label">BULLETS FIRED</span><strong id="victoryBullets">0</strong></div>
+      <div><span class="label">DAMAGE TAKEN</span><strong id="victoryDamage">0</strong></div>
+      <div><span class="label">MISSION TIME</span><strong id="victoryTime">00:00</strong></div>
+      <div><span class="label">GOLD COLLECTED</span><strong class="gold-text" id="victoryGold">0</strong></div>
+      <div><span class="label">WAVES CLEARED</span><strong id="victoryWaves">9 / 9</strong></div>
+    </div>
+    <div class="button-row">
+      <button id="victoryShopButton" class="primary-button" type="button" autofocus>Open armory</button>
+      <button id="victoryReplayButton" class="secondary-button" type="button">Replay Level 1</button>
+    </div>
+    <p class="panel-footnote">Replay begins at wave 1 with your permanent upgrades. Review this report and refit in the armory.</p>
+  </dialog>
+
   <dialog id="shopDialog" class="panel shop-panel" aria-labelledby="shopTitle">
     <div class="shop-heading">
       <div><p class="eyebrow accent">PERMANENT UPGRADES / ARMORY</p><h2 id="shopTitle">Make the next run count.</h2></div>
@@ -99,9 +147,11 @@
       <div><span class="label">ALIENS DOWN</span><strong id="summaryKills">0</strong></div>
       <div><span class="label">TIME ALIVE</span><strong id="summaryTime">00:00</strong></div>
       <div><span class="label">GOLD COLLECTED</span><strong class="gold-text" id="summaryGold">0</strong></div>
+      <div id="summaryBulletsStat" hidden><span class="label">BULLETS FIRED</span><strong id="summaryBullets">0</strong></div>
+      <div id="summaryDamageStat" hidden><span class="label">DAMAGE TAKEN</span><strong id="summaryDamage">0</strong></div>
     </div>
     <div id="upgradeGrid" class="upgrade-grid"></div>
-    <p id="shopMessage" class="shop-message" role="status">Choose your upgrades, then deploy again.</p>
+    <p id="shopMessage" class="shop-message" role="status">Choose your upgrades, then pick a level to deploy again.</p>
     <div class="shop-bottom">
       <div class="button-row">
         <button id="shopStartButton" class="primary-button" type="button">Deploy again <span aria-hidden="true">&rarr;</span></button>
