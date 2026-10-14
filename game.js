@@ -16,6 +16,7 @@
   const particles = [];
   const floaters = [];
   const blasts = [];
+  const goldWaves = [];
   let savingDisabled = false;
   let dirty = false;
   let saveClock = 0;
@@ -132,6 +133,7 @@
     particles.length = 0;
     floaters.length = 0;
     blasts.length = 0;
+    goldWaves.length = 0;
     accumulator = 0;
     shake = 0;
     game.start(profile);
@@ -190,19 +192,31 @@
       const cost = Core.upgradeCost(profile, key);
       const maxed = cost === null;
       const affordable = !maxed && profile.gold >= cost;
+      const canToggle = key === "wavePickup" && profile.levels.wavePickup === 1;
       const nextProfile = { ...profile, levels: { ...profile.levels, [key]: profile.levels[key] + (maxed ? 0 : 1) } };
       const next = Core.getStats(nextProfile);
       const card = document.createElement("article");
       card.className = `upgrade-card${affordable ? " affordable" : ""}${key === "bullets" || key === "wavePickup" ? " advanced" : ""}`;
       card.innerHTML = `<div class="upgrade-top"><svg class="upgrade-symbol" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${symbols[key]}</svg><span class="upgrade-level">LVL ${profile.levels[key]} / ${upgrade.maxLevel}</span></div><h3>${upgrade.name}</h3><p>${upgrade.description}</p><div class="upgrade-values">${displayStat(key, current)}${maxed ? "" : `<span>&rarr;</span>${displayStat(key, next)}`}</div>`;
+      if (canToggle && !profile.wavePickupEnabled) card.querySelector(".upgrade-values").textContent = "Disabled / manual pickup";
       const button = document.createElement("button");
       button.type = "button";
       button.className = "buy-button";
       button.dataset.upgrade = key;
-      button.disabled = !affordable;
+      button.disabled = !canToggle && !affordable;
       button.setAttribute("aria-label", maxed ? `${upgrade.name}: maximum level` : `Upgrade ${upgrade.name} for ${cost} gold`);
       button.innerHTML = maxed ? "<span>Maximum level</span>" : `<span>Upgrade</span><span class="price">${cost.toLocaleString()} gold</span>`;
+      if (canToggle) {
+        button.textContent = `Collection: ${profile.wavePickupEnabled ? "ON" : "OFF"}`;
+        button.setAttribute("aria-pressed", String(profile.wavePickupEnabled));
+        button.setAttribute("aria-label", `${profile.wavePickupEnabled ? "Disable" : "Enable"} automatic wave gold collection`);
+      }
       button.addEventListener("click", () => {
+        if (canToggle) {
+          toggleWaveCollection();
+          grid.querySelector('[data-upgrade="wavePickup"]').focus({ preventScroll: true });
+          return;
+        }
         const result = Core.buyUpgrade(profile, key);
         if (!result.success) {
           $("shopMessage").textContent = result.reason;
@@ -249,6 +263,7 @@
   $("startButton").addEventListener("click", startRun);
   $("shopStartButton").addEventListener("click", startRun);
   $("menuShopButton").addEventListener("click", () => openShop(false));
+  $("wavePickupButton").addEventListener("click", toggleWaveCollection);
   $("pauseButton").addEventListener("click", pauseRun);
   $("resumeButton").addEventListener("click", resumeRun);
   $("retreatButton").addEventListener("click", () => {
@@ -368,9 +383,27 @@
     $("healthFill").style.width = `${hp / maxHp * 100}%`;
     $("healthFill").style.background = hp / maxHp < 0.3 ? "#f08080" : "#7df1d5";
     $("pauseButton").disabled = game.phase !== "running";
+    $("wavePickupButton").hidden = profile.levels.wavePickup !== 1;
+    $("wavePickupButton").textContent = `Wave gold: ${profile.wavePickupEnabled ? "ON" : "OFF"}`;
+    $("wavePickupButton").setAttribute("aria-pressed", String(profile.wavePickupEnabled));
     $("missionStatus").textContent = game.phase === "paused" ? "MISSION PAUSED" : game.phase === "running" ? (game.countdown > 0 ? "NEXT WAVE INCOMING" : "SWARM DETECTED") : game.phase === "ended" ? "MISSION COMPLETE" : "AWAITING DEPLOYMENT";
     $("waveLabel").textContent = active ? (game.countdown > 0 ? `WAVE ${game.wave + 1} / ${Math.ceil(game.countdown)}s` : `WAVE ${game.wave}`) : game.wave ? `WAVE ${game.wave}` : "SECTOR 07";
     if (savingDisabled) $("saveStatus").textContent = "Saving unavailable / see notice above";
+  }
+
+  function toggleWaveCollection() {
+    const result = Core.toggleWavePickup(profile);
+    if (!result.success) {
+      notice(result.reason);
+      return;
+    }
+    dirty = true;
+    saveProfile();
+    if (shop.open) {
+      renderShop();
+      $("shopMessage").textContent = `Automatic wave gold collection ${result.enabled ? "enabled" : "disabled"}. Applies to future wave clears.`;
+    }
+    updateHud();
   }
 
   function burst(x, y, color, count, force) {
@@ -411,9 +444,24 @@
       }
       if (event.type === "gold") {
         dirty = true;
-        if (event.value > 0) floaters.push({ x: event.x, y: event.y - 15, text: `+${event.value}`, color: "#f4c46c", life: 0.75 });
-        burst(event.x, event.y, "#f4c46c", 4, 65);
-        tone(820, 0.055, 0.018, "sine", 1200);
+        if (event.coins) {
+          goldWaves.push({
+            elapsed: 0,
+            value: event.value,
+            coins: event.coins.map((coin, index) => ({
+              startX: coin.x, startY: coin.y, x: coin.x, y: coin.y, prevX: coin.x, prevY: coin.y,
+              delay: reducedMotion ? 0 : index % 8 * 0.025,
+              duration: reducedMotion ? 0.18 : 0.7 + Math.hypot(coin.x - game.player.x, coin.y - game.player.y) / Math.hypot(Core.WIDTH, Core.HEIGHT) * 0.5,
+              bend: reducedMotion ? 0 : (index % 2 ? -1 : 1) * Math.min(90, Math.hypot(coin.x - game.player.x, coin.y - game.player.y) * 0.12),
+              arrived: false,
+            })),
+          });
+          tone(240, 0.3, 0.025, "triangle", 900);
+        } else {
+          if (event.value > 0) floaters.push({ x: event.x, y: event.y - 15, text: `+${event.value}`, color: "#f4c46c", life: 0.75 });
+          burst(event.x, event.y, "#f4c46c", 4, 65);
+          tone(820, 0.055, 0.018, "sine", 1200);
+        }
       }
       if (event.type === "heal") {
         floaters.push({ x: event.x, y: event.y - 25, text: "+HEALTH", color: "#7df1d5", life: 0.8 });
@@ -439,6 +487,7 @@
         tone(90, 0.25, 0.06, "sawtooth", 25);
       }
       if (event.type === "ended") {
+        goldWaves.length = 0;
         dirty = true;
         saveProfile();
         resetInput();
@@ -515,6 +564,45 @@
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  function drawGoldCoin(x, y, age) {
+    circle(x, y + 4, 9, "#0005");
+    ctx.save(); ctx.translate(x, y); ctx.scale(0.55 + Math.abs(Math.sin(age * 3)) * 0.45, 1);
+    circle(0, 0, 7, "#c18b40");
+    circle(0, 0, 5, "#f5c76e");
+    ctx.strokeStyle = "#ffe7a5"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = "#fff0bd"; ctx.fillRect(-1, -3, 2, 6);
+    ctx.restore();
+  }
+
+  function animateGoldWaves(dt) {
+    for (let i = goldWaves.length - 1; i >= 0; i -= 1) {
+      const wave = goldWaves[i];
+      wave.elapsed += dt;
+      for (const coin of wave.coins) {
+        if (coin.arrived || wave.elapsed < coin.delay) continue;
+        const t = Math.min(1, (wave.elapsed - coin.delay) / coin.duration);
+        const progress = t * t * (3 - 2 * t);
+        const dx = game.player.x - coin.startX;
+        const dy = game.player.y - coin.startY;
+        const distance = Math.hypot(dx, dy);
+        const arc = Math.sin(Math.PI * t) * coin.bend;
+        coin.prevX = coin.x;
+        coin.prevY = coin.y;
+        coin.x = coin.startX + dx * progress - (distance ? dy / distance * arc : 0);
+        coin.y = coin.startY + dy * progress + (distance ? dx / distance * arc : 0);
+        if (t === 1) {
+          coin.arrived = true;
+          burst(game.player.x, game.player.y, "#f4c46c", 2, 70);
+        }
+      }
+      if (wave.coins.every(coin => coin.arrived)) {
+        if (wave.value > 0) floaters.push({ x: game.player.x, y: game.player.y - 25, text: `+${wave.value}`, color: "#f4c46c", life: 0.9 });
+        tone(920, 0.12, 0.025, "sine", 1400);
+        goldWaves.splice(i, 1);
+      }
+    }
   }
 
   function drawEnemyHealth(enemy) {
@@ -737,17 +825,22 @@
     ctx.drawImage(floor, 0, 0);
     for (const pickup of game.pickups) {
       if (pickup.kind === "gold") {
-        circle(pickup.x, pickup.y + 4, 9, "#0005");
-        ctx.save(); ctx.translate(pickup.x, pickup.y); ctx.scale(0.55 + Math.abs(Math.sin(pickup.age * 3)) * 0.45, 1);
-        circle(0, 0, 7, "#c18b40");
-        circle(0, 0, 5, "#f5c76e");
-        ctx.strokeStyle = "#ffe7a5"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.stroke();
-        ctx.fillStyle = "#fff0bd"; ctx.fillRect(-1, -3, 2, 6);
-        ctx.restore();
+        drawGoldCoin(pickup.x, pickup.y, pickup.age);
       } else {
         ctx.fillStyle = "#153f35"; ctx.fillRect(pickup.x - 10, pickup.y - 10, 20, 20);
         ctx.strokeStyle = "#7df1d5"; ctx.strokeRect(pickup.x - 10, pickup.y - 10, 20, 20);
         ctx.fillStyle = "#7df1d5"; ctx.fillRect(pickup.x - 2, pickup.y - 6, 4, 12); ctx.fillRect(pickup.x - 6, pickup.y - 2, 12, 4);
+      }
+    }
+    for (const wave of goldWaves) {
+      for (const coin of wave.coins) {
+        if (coin.arrived) continue;
+        if (!reducedMotion && wave.elapsed >= coin.delay) {
+          ctx.strokeStyle = "#f4c46c88"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(coin.prevX, coin.prevY); ctx.lineTo(coin.x, coin.y); ctx.stroke();
+          circle(coin.x, coin.y, 13, "#f4c46c22");
+        }
+        drawGoldCoin(coin.x, coin.y, wave.elapsed * 2);
       }
     }
     const target = game.phase === "running" ? game.closestEnemy() : null;
@@ -826,6 +919,7 @@
       accumulator = 0;
     }
     if (game.phase !== "paused") {
+      animateGoldWaves(dt);
       for (let i = blasts.length - 1; i >= 0; i -= 1) {
         blasts[i].life -= dt;
         if (blasts[i].life <= 0) blasts.splice(i, 1);

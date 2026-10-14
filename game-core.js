@@ -43,6 +43,7 @@
       version: 1,
       gold: 0,
       levels: { damage: 0, fireRate: 0, range: 0, speed: 0, hp: 0, pickup: 0, bullets: 0, wavePickup: 0 },
+      wavePickupEnabled: true,
       bestWave: 0,
       bestKills: 0,
       bestTime: 0,
@@ -53,14 +54,16 @@
   function migrateProfile(profile) {
     if (profile?.version !== 1 || !profile.levels || typeof profile.levels !== "object") return profile;
     const missing = ["range", "bullets", "wavePickup"].filter(key => !Object.hasOwn(profile.levels, key));
-    if (missing.length === 0) return profile;
+    const missingToggle = !Object.hasOwn(profile, "wavePickupEnabled");
+    if (missing.length === 0 && !missingToggle) return profile;
     const levels = { ...profile.levels };
     for (const key of missing) levels[key] = 0;
-    return { ...profile, levels };
+    return { ...profile, levels, ...(missingToggle ? { wavePickupEnabled: true } : {}) };
   }
 
   function isValidProfile(profile) {
     if (!profile || profile.version !== 1 || !profile.levels) return false;
+    if (typeof profile.wavePickupEnabled !== "boolean") return false;
     if (!Number.isInteger(profile.gold) || profile.gold < 0 || profile.gold > MAX_GOLD) return false;
     for (const [key, upgrade] of Object.entries(UPGRADES)) {
       const level = profile.levels[key];
@@ -99,6 +102,13 @@
     profile.gold -= cost;
     profile.levels[key] += 1;
     return { success: true, cost };
+  }
+
+  function toggleWavePickup(profile) {
+    if (!isValidProfile(profile)) throw new TypeError("Invalid player profile.");
+    if (profile.levels.wavePickup !== 1) return { success: false, reason: "Purchase Wave gold collection before toggling it." };
+    profile.wavePickupEnabled = !profile.wavePickupEnabled;
+    return { success: true, enabled: profile.wavePickupEnabled };
   }
 
   function waveSettings(wave) {
@@ -339,11 +349,11 @@
       }
     }
 
-    collectGold(value, x, y) {
+    collectGold(value, x, y, coins) {
       const credited = Math.min(value, MAX_GOLD - this.profile.gold);
       this.coins += credited;
       this.profile.gold += credited;
-      this.events.push({ type: "gold", x, y, value: credited });
+      this.events.push({ type: "gold", x, y, value: credited, ...(coins ? { coins } : {}) });
     }
 
     resolveExplosions() {
@@ -561,15 +571,17 @@
       });
 
       if (this.waveActive && this.spawnRemaining === 0 && this.enemies.length === 0 && this.fireballs.length === 0) {
-        if (this.stats.wavePickup === 1) {
+        if (this.stats.wavePickup === 1 && this.profile.wavePickupEnabled) {
           let value = 0;
+          const coins = [];
           this.pickups = this.pickups.filter(pickup => {
             if (pickup.kind !== "gold") return true;
             value = Math.min(MAX_GOLD, value + pickup.value);
+            coins.push({ x: pickup.x, y: pickup.y });
             return false;
           });
-          // One collection event avoids playing a separate sound for every swept coin.
-          if (value > 0) this.collectGold(value, p.x, p.y);
+          // Bank immediately; copied positions animate the coins without risking saved rewards.
+          if (value > 0) this.collectGold(value, p.x, p.y, coins);
         }
         this.waveActive = false;
         this.countdown = 3.5;
@@ -583,5 +595,5 @@
     }
   }
 
-  return { WIDTH, HEIGHT, MAX_GOLD, BASE_ALIEN_STATS, BOSS_INTERVAL, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, SKELETON_START_WAVE, SKELETON_SPAWN_CHANCE, SKELETON_ATTACK_RANGE, SKELETON_KEEP_DISTANCE, SKELETON_FIRE_INTERVAL, SKELETON_CAST_TIME, FIREBALL_SPEED, FIREBALL_RADIUS, FIREBALL_LIFETIME, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, waveSettings, enemyGold, segmentCircleHit, Game };
+  return { WIDTH, HEIGHT, MAX_GOLD, BASE_ALIEN_STATS, BOSS_INTERVAL, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, SKELETON_START_WAVE, SKELETON_SPAWN_CHANCE, SKELETON_ATTACK_RANGE, SKELETON_KEEP_DISTANCE, SKELETON_FIRE_INTERVAL, SKELETON_CAST_TIME, FIREBALL_SPEED, FIREBALL_RADIUS, FIREBALL_LIFETIME, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, toggleWavePickup, waveSettings, enemyGold, segmentCircleHit, Game };
 });

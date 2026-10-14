@@ -110,7 +110,7 @@ test("old saves gain new level-zero upgrades without losing or mutating progress
   const original = JSON.stringify(oldSave);
   const migrated = Core.migrateProfile(oldSave);
   assert.equal(JSON.stringify(oldSave), original);
-  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0, bullets: 0, wavePickup: 0 } });
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0, bullets: 0, wavePickup: 0 }, wavePickupEnabled: true });
   assert.equal(Core.isValidProfile(migrated), true);
   assert.equal(Core.getStats(migrated).range, 360);
   assert.equal(Core.getStats(migrated).bullets, 1);
@@ -509,6 +509,129 @@ test("wave collection applies next run and survives saving", () => {
   game.update(1 / 60);
   assert.equal(restored.gold, 9);
   assert.equal(restored.levels.wavePickup, 1);
+});
+
+test("old purchased wave-collection saves migrate to ON without losing or mutating progress", () => {
+  const oldSave = Core.createProfile();
+  oldSave.levels.wavePickup = 1;
+  oldSave.levels.bullets = 2;
+  oldSave.gold = 1234;
+  oldSave.bestWave = 7;
+  delete oldSave.wavePickupEnabled;
+  const before = JSON.stringify(oldSave);
+  const migrated = Core.migrateProfile(oldSave);
+  assert.equal(JSON.stringify(oldSave), before);
+  assert.deepEqual(migrated, { ...oldSave, wavePickupEnabled: true });
+  assert.equal(Core.isValidProfile(migrated), true);
+  assert.equal(Core.migrateProfile(migrated), migrated);
+});
+
+test("the wave-collection toggle preserves OFF across migration and save round trips", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  profile.wavePickupEnabled = false;
+  const restored = Core.migrateProfile(JSON.parse(JSON.stringify(profile)));
+  assert.equal(restored.wavePickupEnabled, false);
+  assert.equal(Core.isValidProfile(restored), true);
+  for (const enabled of [null, 0, 1, "true", {}]) {
+    const invalid = { ...profile, wavePickupEnabled: enabled };
+    assert.equal(Core.migrateProfile(invalid), invalid);
+    assert.equal(Core.isValidProfile(invalid), false);
+    assert.throws(() => Core.toggleWavePickup(invalid), TypeError);
+  }
+});
+
+test("only an owned wave-collection upgrade can be toggled and doing so never costs gold", () => {
+  const profile = Core.createProfile();
+  profile.gold = 3000;
+  const before = JSON.stringify(profile);
+  assert.equal(Core.toggleWavePickup(profile).success, false);
+  assert.equal(JSON.stringify(profile), before);
+  Core.buyUpgrade(profile, "wavePickup");
+  assert.deepEqual(Core.toggleWavePickup(profile), { success: true, enabled: false });
+  assert.equal(profile.gold, 500);
+  assert.equal(profile.levels.wavePickup, 1);
+  assert.equal(Core.upgradeCost(profile, "wavePickup"), null);
+  assert.deepEqual(Core.toggleWavePickup(profile), { success: true, enabled: true });
+  assert.equal(profile.gold, 500);
+});
+
+test("the toggle applies live to future wave clears while manual pickup still works", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  const game = startedGame(profile);
+  Core.toggleWavePickup(profile);
+  assert.equal(game.stats.wavePickup, 1);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  game.pickups.push(
+    { kind: "gold", x: 40, y: 40, value: 7, age: 0 },
+    { kind: "gold", x: game.player.x, y: game.player.y, value: 4, age: 0 },
+  );
+  game.update(1 / 60);
+  assert.equal(profile.gold, 4);
+  assert.equal(game.pickups.length, 1);
+  assert.equal(game.drainEvents().filter(event => event.type === "gold").some(event => Object.hasOwn(event, "coins")), false);
+  Core.toggleWavePickup(profile);
+  game.beginWave(2);
+  game.spawnRemaining = 0;
+  game.pickups.push({ kind: "gold", x: Core.WIDTH - 40, y: Core.HEIGHT - 40, value: 11, age: 0 });
+  game.update(1 / 60);
+  assert.equal(profile.gold, 22);
+  assert.equal(game.coins, 22);
+  assert.equal(game.pickups.length, 0);
+  const event = game.drainEvents().find(event => event.type === "gold");
+  assert.equal(event.value, 18);
+  assert.equal(event.coins.length, 2);
+});
+
+test("wave collection supplies copied positions for every coin and banks before animation", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  const first = { kind: "gold", x: 40, y: 40, value: 7, age: 0 };
+  const second = { kind: "gold", x: Core.WIDTH - 40, y: Core.HEIGHT - 40, value: 11, age: 0 };
+  game.pickups.push(first, second, { kind: "health", x: 200, y: 200, age: 0 });
+  game.update(1 / 60);
+  assert.equal(profile.gold, 18);
+  assert.equal(game.coins, 18);
+  assert.equal(game.pickups.length, 1);
+  const event = game.drainEvents().find(event => event.type === "gold");
+  assert.deepEqual(event.coins, [{ x: 40, y: 40 }, { x: Core.WIDTH - 40, y: Core.HEIGHT - 40 }]);
+  first.x = 0;
+  second.y = 0;
+  assert.deepEqual(event.coins, [{ x: 40, y: 40 }, { x: Core.WIDTH - 40, y: Core.HEIGHT - 40 }]);
+  game.pause();
+  Core.toggleWavePickup(profile);
+  game.finish("retreated");
+  assert.equal(game.report.gold, 18);
+  assert.equal(profile.gold, 18);
+  game.start(profile);
+  assert.equal(profile.gold, 18);
+  assert.equal(profile.wavePickupEnabled, false);
+  assert.equal(game.coins, 0);
+});
+
+test("wallet-capped wave collection still supplies all coin animations without extra credit", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  profile.gold = Core.MAX_GOLD;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  game.pickups.push(
+    { kind: "gold", x: 40, y: 40, value: 7, age: 0 },
+    { kind: "gold", x: Core.WIDTH - 40, y: Core.HEIGHT - 40, value: 11, age: 0 },
+  );
+  game.update(1 / 60);
+  const event = game.drainEvents().find(event => event.type === "gold");
+  assert.equal(event.value, 0);
+  assert.equal(event.coins.length, 2);
+  assert.equal(profile.gold, Core.MAX_GOLD);
+  assert.equal(game.coins, 0);
+  assert.equal(game.pickups.length, 0);
 });
 
 test("dying or retreating never sweeps gold even with wave collection unlocked", () => {
