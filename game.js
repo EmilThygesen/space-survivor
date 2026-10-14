@@ -166,6 +166,8 @@
     speed: '<path d="m17 6 7 8-6 5 6 7H12l-4-5 5-6-3-5ZM3 11h5M3 17h6M3 23h3"/>',
     hp: '<path d="M16 4 27 8v9c0 6-11 12-11 12S5 23 5 17V8ZM16 11v10m-5-5h10"/>',
     pickup: '<path d="M7 5v12a9 9 0 0 0 18 0V5h-6v12a3 3 0 0 1-6 0V5ZM7 11h6m6 0h6"/>',
+    bullets: '<path d="M6 25V10l4-5 4 5v15Zm12 0V10l4-5 4 5v15ZM6 18h8m4 0h8"/>',
+    wavePickup: '<circle cx="7" cy="7" r="3"/><circle cx="25" cy="7" r="3"/><circle cx="7" cy="18" r="3"/><circle cx="25" cy="18" r="3"/><path d="M16 5v17m-5-5 5 5 5-5M8 27h16"/>',
   };
 
   function displayStat(key, stats) {
@@ -174,6 +176,8 @@
     if (key === "range") return `${stats.range} range`;
     if (key === "speed") return `${stats.speed} speed`;
     if (key === "hp") return `${stats.hp} HP`;
+    if (key === "bullets") return `${stats.bullets} ${stats.bullets === 1 ? "bullet" : "bullets"} / shot`;
+    if (key === "wavePickup") return stats.wavePickup === 1 ? "All gold after each wave" : "Manual pickup";
     return `${stats.pickup} radius`;
   }
 
@@ -189,7 +193,7 @@
       const nextProfile = { ...profile, levels: { ...profile.levels, [key]: profile.levels[key] + (maxed ? 0 : 1) } };
       const next = Core.getStats(nextProfile);
       const card = document.createElement("article");
-      card.className = `upgrade-card${affordable ? " affordable" : ""}`;
+      card.className = `upgrade-card${affordable ? " affordable" : ""}${key === "bullets" || key === "wavePickup" ? " advanced" : ""}`;
       card.innerHTML = `<div class="upgrade-top"><svg class="upgrade-symbol" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${symbols[key]}</svg><span class="upgrade-level">LVL ${profile.levels[key]} / ${upgrade.maxLevel}</span></div><h3>${upgrade.name}</h3><p>${upgrade.description}</p><div class="upgrade-values">${displayStat(key, current)}${maxed ? "" : `<span>&rarr;</span>${displayStat(key, next)}`}</div>`;
       const button = document.createElement("button");
       button.type = "button";
@@ -421,6 +425,12 @@
         tone(110, 0.12, 0.04, "sawtooth", 40);
       }
       if (event.type === "chickenArmed") tone(680, 0.12, 0.04, "triangle", 320);
+      if (event.type === "skeletonCast") tone(220, 0.18, 0.025, "triangle", 440);
+      if (event.type === "fireballShot") {
+        burst(event.x, event.y, "#fb923c", 5, 55);
+        tone(180, 0.14, 0.025, "sawtooth", 65);
+      }
+      if (event.type === "fireballImpact") burst(event.x, event.y, "#fb923c", 9, 110);
       if (event.type === "explosion") {
         blasts.push({ x: event.x, y: event.y, radius: event.radius, life: 0.45, maxLife: 0.45 });
         burst(event.x, event.y, "#ffc56b", 28, 260);
@@ -565,9 +575,71 @@
     }
   }
 
+  function drawSkeleton(enemy) {
+    const casting = enemy.castUntil !== null;
+    const charge = casting ? Math.max(0, Math.min(1, 1 - (enemy.castUntil - game.time) / Core.SKELETON_CAST_TIME)) : 0;
+    ctx.save();
+    ctx.translate(enemy.x, enemy.y);
+    ctx.rotate(enemy.angle);
+    ctx.fillStyle = "#0006";
+    ctx.beginPath(); ctx.ellipse(-3, 5, 24, 18, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = enemy.hitFlash > 0 ? "#ffffff" : enemy.color;
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    const stride = casting ? 0 : Math.sin(game.time * 12 + enemy.wobble) * 3;
+    ctx.beginPath(); ctx.moveTo(-19, 0); ctx.lineTo(5, 0); ctx.stroke();
+    for (const side of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(-15, side * 4); ctx.lineTo(-22 + side * stride, side * 12); ctx.lineTo(-26 + side * stride, side * 17); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, side * 5); ctx.lineTo(-4, side * 16); ctx.lineTo(15, side * 13); ctx.stroke();
+      for (const x of [-10, -5, 0]) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.quadraticCurveTo(x - 4, side * 8, x + 3, side * 9); ctx.stroke();
+      }
+    }
+    circle(10, 0, 11, enemy.hitFlash > 0 ? "#ffffff" : enemy.color);
+    ctx.fillStyle = "#1a2430"; ctx.fillRect(16, -4, 5, 8);
+    for (const side of [-1, 1]) {
+      circle(12, side * 4, 3.5, "#17222d");
+      circle(13, side * 4, 1.6, "#ff7951");
+    }
+    ctx.strokeStyle = "#705641"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(15, 13); ctx.lineTo(30, 0); ctx.stroke();
+    circle(30, 0, casting ? 13 + charge * 4 : 7, casting ? "#fb923c44" : "#fb923c22");
+    circle(30, 0, casting ? 6 + charge * 3 : 4, "#fb923c");
+    circle(30, 0, casting ? 3 + charge * 2 : 2, "#fff0a5");
+    ctx.restore();
+    drawEnemyHealth(enemy);
+    if (casting) {
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.font = '700 11px "Segoe UI", sans-serif';
+      ctx.fillStyle = "#ffc078";
+      ctx.fillText("CASTING", enemy.x, enemy.y - enemy.radius - 22);
+      ctx.fillStyle = "#fb923c";
+      ctx.fillRect(enemy.x - 20, enemy.y + enemy.radius + 8, 40 * charge, 3);
+      ctx.restore();
+    }
+  }
+
+  function drawFireball(ball) {
+    const speed = Math.hypot(ball.vx, ball.vy);
+    const dx = ball.vx / speed;
+    const dy = ball.vy / speed;
+    ctx.strokeStyle = "#f9731677";
+    ctx.lineWidth = 7;
+    ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(ball.x - dx * 24, ball.y - dy * 24); ctx.lineTo(ball.x, ball.y); ctx.stroke();
+    circle(ball.x, ball.y, ball.radius + 6, "#fb923c33");
+    circle(ball.x, ball.y, ball.radius, "#f97316");
+    circle(ball.x + dx * 2, ball.y + dy * 2, ball.radius * 0.55, "#fff0a5");
+  }
+
   function drawEnemy(enemy) {
     if (enemy.type === "chicken") {
       drawChicken(enemy);
+      return;
+    }
+    if (enemy.type === "skeleton") {
+      drawSkeleton(enemy);
       return;
     }
     const r = enemy.radius;
@@ -642,11 +714,15 @@
     ctx.fillStyle = "#c3dae0"; ctx.beginPath(); ctx.roundRect(-4, -10, 18, 20, 6); ctx.fill();
     ctx.fillStyle = "#44c5c2"; ctx.beginPath(); ctx.roundRect(5, -7, 7, 14, 3); ctx.fill();
     ctx.fillStyle = "#a4d4da"; ctx.fillRect(3, 8, 16, 5);
-    ctx.fillStyle = "#364d61"; ctx.beginPath(); ctx.roundRect(10, 0, 23, 7, 2); ctx.fill();
-    ctx.fillStyle = "#e3d7af"; ctx.fillRect(28, 1, 7, 5);
-    if (p.muzzleFlash > 0) {
-      ctx.fillStyle = "#ffe8a7";
-      ctx.beginPath(); ctx.moveTo(34, -3); ctx.lineTo(48, 3); ctx.lineTo(34, 11); ctx.lineTo(38, 3); ctx.fill();
+    const bulletCount = game.stats?.bullets ?? 1;
+    for (let i = 0; i < bulletCount; i += 1) {
+      const center = bulletCount === 1 ? 3.5 : (i - (bulletCount - 1) / 2) * 10;
+      ctx.fillStyle = "#364d61"; ctx.beginPath(); ctx.roundRect(10, center - 3.5, 23, 7, 2); ctx.fill();
+      ctx.fillStyle = "#e3d7af"; ctx.fillRect(28, center - 2.5, 7, 5);
+      if (p.muzzleFlash > 0) {
+        ctx.fillStyle = "#ffe8a7";
+        ctx.beginPath(); ctx.moveTo(34, center - 6.5); ctx.lineTo(48, center - 0.5); ctx.lineTo(34, center + 7.5); ctx.lineTo(38, center - 0.5); ctx.fill();
+      }
     }
     ctx.restore();
   }
@@ -690,6 +766,7 @@
       ctx.beginPath(); ctx.moveTo(bullet.x - bullet.vx / length * 27, bullet.y - bullet.vy / length * 27); ctx.lineTo(bullet.x, bullet.y); ctx.stroke();
       circle(bullet.x, bullet.y, 2.6, "#fff3b9");
     }
+    for (const fireball of game.fireballs) drawFireball(fireball);
     drawPlayer();
     for (const blast of blasts) {
       ctx.save();

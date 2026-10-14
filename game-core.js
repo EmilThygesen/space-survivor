@@ -16,6 +16,15 @@
   const CHICKEN_TRIGGER_DISTANCE = 90;
   const CHICKEN_FUSE_DELAY = 1.5;
   const CHICKEN_EXPLOSION_RADIUS = 120;
+  const SKELETON_START_WAVE = 3;
+  const SKELETON_SPAWN_CHANCE = 0.15;
+  const SKELETON_ATTACK_RANGE = 520;
+  const SKELETON_KEEP_DISTANCE = 280;
+  const SKELETON_FIRE_INTERVAL = 2;
+  const SKELETON_CAST_TIME = 0.45;
+  const FIREBALL_SPEED = 260;
+  const FIREBALL_RADIUS = 8;
+  const FIREBALL_LIFETIME = 4;
   const UPGRADES = Object.freeze({
     damage: { name: "Bullet damage", description: "Make every shot count.", baseCost: 25, maxLevel: 25 },
     fireRate: { name: "Fire rate", description: "Put more rounds downrange.", baseCost: 30, maxLevel: 15 },
@@ -23,6 +32,8 @@
     speed: { name: "Run speed", description: "Stay ahead of the swarm.", baseCost: 25, maxLevel: 12 },
     hp: { name: "Max health", description: "Reinforce your combat suit.", baseCost: 25, maxLevel: 25 },
     pickup: { name: "Gold pickup radius", description: "Pull in coins from farther away.", baseCost: 20, maxLevel: 15 },
+    bullets: { name: "Dual bullets", description: "Upgrade each shot to two, then three full-damage bullets.", baseCost: 2500, costMultiplier: 3, maxLevel: 2 },
+    wavePickup: { name: "Wave gold collection", description: "Collect all remaining gold when you clear a wave.", baseCost: 2500, maxLevel: 1 },
   });
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -31,7 +42,7 @@
     return {
       version: 1,
       gold: 0,
-      levels: { damage: 0, fireRate: 0, range: 0, speed: 0, hp: 0, pickup: 0 },
+      levels: { damage: 0, fireRate: 0, range: 0, speed: 0, hp: 0, pickup: 0, bullets: 0, wavePickup: 0 },
       bestWave: 0,
       bestKills: 0,
       bestTime: 0,
@@ -40,8 +51,12 @@
   }
 
   function migrateProfile(profile) {
-    if (profile?.version !== 1 || !profile.levels || typeof profile.levels !== "object" || Object.hasOwn(profile.levels, "range")) return profile;
-    return { ...profile, levels: { ...profile.levels, range: 0 } };
+    if (profile?.version !== 1 || !profile.levels || typeof profile.levels !== "object") return profile;
+    const missing = ["range", "bullets", "wavePickup"].filter(key => !Object.hasOwn(profile.levels, key));
+    if (missing.length === 0) return profile;
+    const levels = { ...profile.levels };
+    for (const key of missing) levels[key] = 0;
+    return { ...profile, levels };
   }
 
   function isValidProfile(profile) {
@@ -66,13 +81,15 @@
       speed: 245 + level.speed * 16,
       hp: 100 + level.hp * 20,
       pickup: 72 + level.pickup * 15,
+      bullets: 1 + level.bullets,
+      wavePickup: level.wavePickup,
     };
   }
 
   function upgradeCost(profile, key) {
     if (!Object.hasOwn(UPGRADES, key)) throw new TypeError("Unknown upgrade.");
     if (profile.levels[key] >= UPGRADES[key].maxLevel) return null;
-    return Math.ceil(UPGRADES[key].baseCost * Math.pow(1.38, profile.levels[key]));
+    return Math.ceil(UPGRADES[key].baseCost * Math.pow(UPGRADES[key].costMultiplier ?? 1.38, profile.levels[key]));
   }
 
   function buyUpgrade(profile, key) {
@@ -129,6 +146,7 @@
       this.player = { x: WIDTH / 2, y: HEIGHT / 2, radius: 17, angle: -Math.PI / 2, hp: 100, maxHp: 100, invulnerable: 0, moving: 0, muzzleFlash: 0 };
       this.enemies = [];
       this.bullets = [];
+      this.fireballs = [];
       this.pickups = [];
       this.events = [];
       this.explosionQueue = [];
@@ -146,6 +164,7 @@
       this.player = { x: WIDTH / 2, y: HEIGHT / 2, radius: 17, angle: -Math.PI / 2, hp: this.stats.hp, maxHp: this.stats.hp, invulnerable: 0, moving: 0, muzzleFlash: 0 };
       this.enemies = [];
       this.bullets = [];
+      this.fireballs = [];
       this.pickups = [];
       this.events = [];
       this.explosionQueue = [];
@@ -193,22 +212,24 @@
         if (Math.hypot(point.x - this.player.x, point.y - this.player.y) > 260) break;
       }
       const roll = this.random();
-      const type = isBoss ? "boss" : roll >= 1 - CHICKEN_SPAWN_CHANCE ? "chicken" : this.wave >= 4 && roll < 0.16 ? "brute" : this.wave >= 2 && roll < 0.45 ? "runner" : "drone";
-      const hpMultiplier = type === "boss" ? 20 : type === "brute" ? 3.2 : type === "runner" ? 0.75 : type === "chicken" ? 0.8 : 1;
+      const type = isBoss ? "boss" : roll >= 1 - CHICKEN_SPAWN_CHANCE ? "chicken" : this.wave >= SKELETON_START_WAVE && roll >= 0.6 && roll < 0.6 + SKELETON_SPAWN_CHANCE ? "skeleton" : this.wave >= 4 && roll < 0.16 ? "brute" : this.wave >= 2 && roll < 0.45 ? "runner" : "drone";
+      const hpMultiplier = type === "boss" ? 20 : type === "brute" ? 3.2 : type === "runner" ? 0.75 : type === "chicken" ? 0.8 : type === "skeleton" ? 1.3 : 1;
       const maxHp = Math.round(this.settings.hp * hpMultiplier);
       this.enemies.push({
         ...point,
         type,
-        radius: type === "boss" ? 36 : type === "brute" ? 25 : type === "runner" ? 12 : type === "chicken" ? 18 : 17,
+        radius: type === "boss" ? 36 : type === "brute" ? 25 : type === "runner" ? 12 : type === "chicken" ? 18 : type === "skeleton" ? 20 : 17,
         hp: maxHp,
         maxHp,
-        speed: this.settings.speed * (type === "boss" ? 4 : type === "brute" ? 0.68 : type === "runner" ? 1.38 : type === "chicken" ? 1.6 : 1),
-        damage: this.settings.damage * (type === "chicken" ? 3 : type === "brute" ? 1.7 : 1),
-        color: type === "boss" ? "#ffa35d" : type === "brute" ? "#ba8deb" : type === "runner" ? "#f295a6" : type === "chicken" ? "#f4e8c9" : "#a8d673",
+        speed: this.settings.speed * (type === "boss" ? 4 : type === "brute" ? 0.68 : type === "runner" ? 1.38 : type === "chicken" ? 1.6 : type === "skeleton" ? 0.85 : 1),
+        damage: this.settings.damage * (type === "chicken" ? 3 : type === "brute" ? 1.7 : type === "skeleton" ? 1.5 : 1),
+        color: type === "boss" ? "#ffa35d" : type === "brute" ? "#ba8deb" : type === "runner" ? "#f295a6" : type === "chicken" ? "#f4e8c9" : type === "skeleton" ? "#e4ddc9" : "#a8d673",
         angle: 0,
         hitFlash: 0,
         contactTimer: 0,
         explodeAt: null,
+        nextFireAt: type === "skeleton" ? this.time + SKELETON_FIRE_INTERVAL : null,
+        castUntil: null,
         wobble: this.random() * Math.PI * 2,
       });
       if (isBoss) this.events.push({ type: "boss" });
@@ -233,11 +254,51 @@
       const angle = Math.atan2(target.y - this.player.y, target.x - this.player.x);
       this.player.angle = angle;
       const offset = Math.min(29, Math.hypot(target.x - this.player.x, target.y - this.player.y));
-      const x = this.player.x + Math.cos(angle) * offset;
-      const y = this.player.y + Math.sin(angle) * offset;
-      this.bullets.push({ x, y, prevX: x, prevY: y, vx: Math.cos(angle) * 1080, vy: Math.sin(angle) * 1080, life: 2, remainingRange: this.stats.range - offset, damage: this.stats.damage });
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      for (let i = 0; i < this.stats.bullets; i += 1) {
+        const lane = (i - (this.stats.bullets - 1) / 2) * 10;
+        const x = this.player.x + dx * offset - dy * lane;
+        const y = this.player.y + dy * offset + dx * lane;
+        // Side-by-side barrels must still stop inside the circular weapon range.
+        const remainingRange = Math.sqrt(this.stats.range ** 2 - lane ** 2) - offset;
+        this.bullets.push({ x, y, prevX: x, prevY: y, vx: dx * 1080, vy: dy * 1080, life: 2, remainingRange, damage: this.stats.damage });
+      }
       this.player.muzzleFlash = 0.065;
       this.events.push({ type: "shot" });
+    }
+
+    shootFireball(enemy) {
+      const angle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
+      const offset = Math.min(enemy.radius + FIREBALL_RADIUS + 2, Math.hypot(this.player.x - enemy.x, this.player.y - enemy.y));
+      const x = enemy.x + Math.cos(angle) * offset;
+      const y = enemy.y + Math.sin(angle) * offset;
+      this.fireballs.push({
+        x, y, prevX: x, prevY: y,
+        vx: Math.cos(angle) * FIREBALL_SPEED,
+        vy: Math.sin(angle) * FIREBALL_SPEED,
+        radius: FIREBALL_RADIUS,
+        damage: enemy.damage,
+        life: FIREBALL_LIFETIME,
+      });
+      this.events.push({ type: "fireballShot", x, y });
+    }
+
+    updateSkeleton(enemy) {
+      const distance = Math.hypot(this.player.x - enemy.x, this.player.y - enemy.y);
+      if (distance > SKELETON_ATTACK_RANGE) {
+        enemy.castUntil = null;
+        enemy.nextFireAt = Math.max(enemy.nextFireAt, this.time + SKELETON_CAST_TIME);
+      } else if (enemy.castUntil !== null) {
+        if (this.time + 1e-9 >= enemy.castUntil) {
+          this.shootFireball(enemy);
+          enemy.castUntil = null;
+          enemy.nextFireAt = this.time + SKELETON_FIRE_INTERVAL;
+        }
+      } else if (this.time + 1e-9 >= enemy.nextFireAt - SKELETON_CAST_TIME) {
+        enemy.castUntil = this.time + SKELETON_CAST_TIME;
+        this.events.push({ type: "skeletonCast", x: enemy.x, y: enemy.y });
+      }
     }
 
     hurt(damage, x, y) {
@@ -278,6 +339,13 @@
       }
     }
 
+    collectGold(value, x, y) {
+      const credited = Math.min(value, MAX_GOLD - this.profile.gold);
+      this.coins += credited;
+      this.profile.gold += credited;
+      this.events.push({ type: "gold", x, y, value: credited });
+    }
+
     resolveExplosions() {
       let playerHit = null;
       // Resolve chains iteratively and settle enemy deaths before a blast can end the run.
@@ -303,6 +371,7 @@
     finish(reason) {
       if (this.phase !== "running" && this.phase !== "paused") return;
       this.phase = "ended";
+      this.fireballs = [];
       this.profile.bestWave = Math.max(this.profile.bestWave, this.wave);
       this.profile.bestKills = Math.max(this.profile.bestKills, this.kills);
       this.profile.bestTime = Math.max(this.profile.bestTime, this.time);
@@ -316,6 +385,8 @@
       if (this.phase !== "running" || dt === 0) return;
       this.time += dt;
       const p = this.player;
+      const prevPlayerX = p.x;
+      const prevPlayerY = p.y;
       p.invulnerable = Math.max(0, p.invulnerable - dt);
       p.muzzleFlash = Math.max(0, p.muzzleFlash - dt);
       const length = Math.hypot(input.x, input.y);
@@ -365,9 +436,10 @@
             sy += oy / separation * (minimum - separation) * 2;
           }
         }
-        if (distance > 0 && (enemy.type !== "chicken" || enemy.explodeAt === null)) {
-          enemy.x = clamp(enemy.x + (dx / distance * enemy.speed + sx) * dt, enemy.radius, WIDTH - enemy.radius);
-          enemy.y = clamp(enemy.y + (dy / distance * enemy.speed + sy) * dt, enemy.radius, HEIGHT - enemy.radius);
+        const direction = enemy.type === "skeleton" ? distance > SKELETON_KEEP_DISTANCE + 40 ? 1 : distance < SKELETON_KEEP_DISTANCE - 40 ? -1 : 0 : 1;
+        if (distance > 0 && (enemy.type !== "chicken" || enemy.explodeAt === null) && (enemy.type !== "skeleton" || enemy.castUntil === null)) {
+          enemy.x = clamp(enemy.x + (dx / distance * enemy.speed * direction + sx) * dt, enemy.radius, WIDTH - enemy.radius);
+          enemy.y = clamp(enemy.y + (dy / distance * enemy.speed * direction + sy) * dt, enemy.radius, HEIGHT - enemy.radius);
         }
         const playerDistance = Math.hypot(p.x - enemy.x, p.y - enemy.y);
         if (enemy.type === "chicken") {
@@ -375,7 +447,7 @@
             enemy.explodeAt = this.time + CHICKEN_FUSE_DELAY;
             this.events.push({ type: "chickenArmed", x: enemy.x, y: enemy.y });
           }
-        } else if (playerDistance < p.radius + enemy.radius && enemy.contactTimer === 0) {
+        } else if (enemy.type !== "skeleton" && playerDistance < p.radius + enemy.radius && enemy.contactTimer === 0) {
           enemy.contactTimer = 0.7;
           this.hurt(enemy.damage, enemy.x, enemy.y);
           if (this.phase === "ended") return;
@@ -432,6 +504,36 @@
       this.enemies = this.enemies.filter(enemy => enemy.hp > 0);
       if (this.phase === "ended") return;
 
+      for (const fireball of this.fireballs) {
+        fireball.prevX = fireball.x;
+        fireball.prevY = fireball.y;
+        const duration = Math.min(dt, fireball.life);
+        fireball.x += fireball.vx * duration;
+        fireball.y += fireball.vy * duration;
+        fireball.life = Math.max(0, fireball.life - dt);
+        if (fireball.life < 1e-9) fireball.life = 0;
+        // Sweep relative motion so neither a fast fireball nor a moving soldier can skip a hit.
+        const playerX = prevPlayerX + (p.x - prevPlayerX) * duration / dt;
+        const playerY = prevPlayerY + (p.y - prevPlayerY) * duration / dt;
+        const hit = segmentCircleHit(
+          fireball.prevX - prevPlayerX, fireball.prevY - prevPlayerY,
+          fireball.x - playerX, fireball.y - playerY,
+          0, 0, p.radius + fireball.radius,
+        );
+        if (hit !== null) {
+          const x = fireball.prevX + (fireball.x - fireball.prevX) * hit;
+          const y = fireball.prevY + (fireball.y - fireball.prevY) * hit;
+          fireball.life = 0;
+          this.events.push({ type: "fireballImpact", x, y });
+          this.hurt(fireball.damage, x, y);
+          if (this.phase === "ended") return;
+        }
+      }
+      this.fireballs = this.fireballs.filter(ball => ball.life > 0 && ball.x > -ball.radius && ball.x < WIDTH + ball.radius && ball.y > -ball.radius && ball.y < HEIGHT + ball.radius);
+      for (const enemy of this.enemies) {
+        if (enemy.type === "skeleton") this.updateSkeleton(enemy);
+      }
+
       this.pickups = this.pickups.filter(pickup => {
         pickup.age += dt;
         const dx = p.x - pickup.x;
@@ -447,10 +549,7 @@
         }
         if (distance <= this.stats.pickup) pickup.magnetized = true;
         if (distance <= p.radius + 7) {
-          const credited = Math.min(pickup.value, MAX_GOLD - this.profile.gold);
-          this.coins += credited;
-          this.profile.gold += credited;
-          this.events.push({ type: "gold", x: pickup.x, y: pickup.y, value: credited });
+          this.collectGold(pickup.value, pickup.x, pickup.y);
           return false;
         }
         if (pickup.magnetized && distance > 0) {
@@ -461,7 +560,17 @@
         return pickup.age < 120;
       });
 
-      if (this.waveActive && this.spawnRemaining === 0 && this.enemies.length === 0) {
+      if (this.waveActive && this.spawnRemaining === 0 && this.enemies.length === 0 && this.fireballs.length === 0) {
+        if (this.stats.wavePickup === 1) {
+          let value = 0;
+          this.pickups = this.pickups.filter(pickup => {
+            if (pickup.kind !== "gold") return true;
+            value = Math.min(MAX_GOLD, value + pickup.value);
+            return false;
+          });
+          // One collection event avoids playing a separate sound for every swept coin.
+          if (value > 0) this.collectGold(value, p.x, p.y);
+        }
         this.waveActive = false;
         this.countdown = 3.5;
         p.hp = Math.min(p.maxHp, p.hp + p.maxHp * 0.12);
@@ -474,5 +583,5 @@
     }
   }
 
-  return { WIDTH, HEIGHT, MAX_GOLD, BASE_ALIEN_STATS, BOSS_INTERVAL, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, waveSettings, enemyGold, segmentCircleHit, Game };
+  return { WIDTH, HEIGHT, MAX_GOLD, BASE_ALIEN_STATS, BOSS_INTERVAL, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, SKELETON_START_WAVE, SKELETON_SPAWN_CHANCE, SKELETON_ATTACK_RANGE, SKELETON_KEEP_DISTANCE, SKELETON_FIRE_INTERVAL, SKELETON_CAST_TIME, FIREBALL_SPEED, FIREBALL_RADIUS, FIREBALL_LIFETIME, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, waveSettings, enemyGold, segmentCircleHit, Game };
 });

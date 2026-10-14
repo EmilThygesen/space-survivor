@@ -31,6 +31,28 @@ function chickenEncounter(distance = 60) {
   return { game, chicken };
 }
 
+function skeletonEncounter(distance = 300, wave = Core.SKELETON_START_WAVE) {
+  const game = startedGame();
+  game.beginWave(wave);
+  game.spawnRemaining = 0;
+  game.fireTimer = 100;
+  game.random = () => 0.7;
+  game.spawnEnemy();
+  const skeleton = game.enemies[0];
+  skeleton.x = game.player.x + distance;
+  skeleton.y = game.player.y;
+  game.drainEvents();
+  return { game, skeleton };
+}
+
+function advanceFrames(game, count, input) {
+  for (let i = 0; i < count; i += 1) game.update(1 / 60, input);
+}
+
+function fireballAt(x, y, vx, vy = 0, damage = 18, life = Core.FIREBALL_LIFETIME) {
+  return { x, y, prevX: x, prevY: y, vx, vy, damage, life, radius: Core.FIREBALL_RADIUS };
+}
+
 test("new profiles are valid and invalid saves are rejected", () => {
   const profile = Core.createProfile();
   assert.equal(Core.isValidProfile(profile), true);
@@ -41,7 +63,7 @@ test("new profiles are valid and invalid saves are rejected", () => {
   assert.equal(Core.isValidProfile({ ...profile, version: 2 }), false);
 });
 
-test("all six upgrades improve their corresponding stat", () => {
+test("all upgrades improve their corresponding stat", () => {
   const profile = Core.createProfile();
   profile.gold = 10000;
   for (const key of Object.keys(Core.UPGRADES)) {
@@ -75,7 +97,7 @@ test("weapon range starts at 360 and upgrades by 40 units up to level 15", () =>
   assert.equal(Core.isValidProfile(profile), true);
 });
 
-test("old saves gain a level-zero range upgrade without losing or mutating progress", () => {
+test("old saves gain new level-zero upgrades without losing or mutating progress", () => {
   const oldSave = {
     version: 1,
     gold: 1234,
@@ -88,10 +110,428 @@ test("old saves gain a level-zero range upgrade without losing or mutating progr
   const original = JSON.stringify(oldSave);
   const migrated = Core.migrateProfile(oldSave);
   assert.equal(JSON.stringify(oldSave), original);
-  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0 } });
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, range: 0, bullets: 0, wavePickup: 0 } });
   assert.equal(Core.isValidProfile(migrated), true);
   assert.equal(Core.getStats(migrated).range, 360);
+  assert.equal(Core.getStats(migrated).bullets, 1);
+  assert.equal(Core.getStats(migrated).wavePickup, 0);
   assert.equal(Core.migrateProfile(migrated), migrated);
+});
+
+test("dual bullets cost 2500 for two bullets and 7500 for three, capped at level two", () => {
+  const profile = Core.createProfile();
+  assert.equal(Core.getStats(profile).bullets, 1);
+  assert.equal(Core.upgradeCost(profile, "bullets"), 2500);
+  profile.gold = 2499;
+  const before = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "bullets").success, false);
+  assert.equal(JSON.stringify(profile), before);
+  profile.gold = 2500;
+  assert.deepEqual(Core.buyUpgrade(profile, "bullets"), { success: true, cost: 2500 });
+  assert.equal(profile.gold, 0);
+  assert.equal(profile.levels.bullets, 1);
+  assert.equal(Core.getStats(profile).bullets, 2);
+  assert.equal(Core.upgradeCost(profile, "bullets"), 7500);
+  profile.gold = 7499;
+  const beforeSecondLevel = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "bullets").success, false);
+  assert.equal(JSON.stringify(profile), beforeSecondLevel);
+  profile.gold = 7500;
+  assert.deepEqual(Core.buyUpgrade(profile, "bullets"), { success: true, cost: 7500 });
+  assert.equal(profile.gold, 0);
+  assert.equal(profile.levels.bullets, 2);
+  assert.equal(Core.getStats(profile).bullets, 3);
+  profile.gold = 10000;
+  assert.equal(Core.upgradeCost(profile, "bullets"), null);
+  assert.equal(Core.buyUpgrade(profile, "bullets").success, false);
+  assert.equal(profile.gold, 10000);
+  assert.equal(profile.levels.bullets, 2);
+  assert.equal(Core.isValidProfile(profile), true);
+});
+
+test("current saves add locked dual bullets without resetting range or any existing progress", () => {
+  const oldSave = Core.createProfile();
+  delete oldSave.levels.bullets;
+  oldSave.gold = 1500;
+  oldSave.levels.range = 4;
+  oldSave.levels.damage = 3;
+  oldSave.bestWave = 8;
+  oldSave.bestKills = 150;
+  oldSave.bestTime = 270;
+  oldSave.totalRuns = 12;
+  const before = JSON.stringify(oldSave);
+  const migrated = Core.migrateProfile(oldSave);
+  assert.equal(JSON.stringify(oldSave), before);
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, bullets: 0 } });
+  assert.equal(Core.getStats(migrated).range, 520);
+  assert.equal(Core.getStats(migrated).bullets, 1);
+  assert.equal(Core.isValidProfile(migrated), true);
+  assert.equal(Core.migrateProfile(migrated), migrated);
+});
+
+test("migration preserves purchased dual bullets and rejects invalid upgrade levels", () => {
+  const profile = Core.createProfile();
+  profile.levels.bullets = 1;
+  delete profile.levels.range;
+  const migrated = Core.migrateProfile(profile);
+  assert.equal(migrated.levels.range, 0);
+  assert.equal(migrated.levels.bullets, 1);
+  assert.equal(Core.getStats(migrated).bullets, 2);
+  for (const level of [-1, 3, 0.5, null, "1"]) {
+    const invalid = { ...migrated, levels: { ...migrated.levels, bullets: level } };
+    assert.equal(Core.migrateProfile(invalid), invalid);
+    assert.equal(Core.isValidProfile(invalid), false);
+  }
+});
+
+test("dual bullets apply next run and remain unlocked after a save round trip", () => {
+  const profile = Core.createProfile();
+  profile.gold = 2750;
+  const game = startedGame(profile);
+  Core.buyUpgrade(profile, "bullets");
+  assert.equal(game.stats.bullets, 1);
+  const restored = Core.migrateProfile(JSON.parse(JSON.stringify(profile)));
+  game.start(restored);
+  assert.equal(game.stats.bullets, 2);
+  assert.equal(restored.gold, 250);
+  assert.equal(restored.levels.bullets, 1);
+  assert.equal(Core.isValidProfile(restored), true);
+  game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
+  assert.equal(game.bullets.length, 2);
+});
+
+test("existing dual bullets and wave collection stay purchased without an extra charge", () => {
+  const profile = Core.createProfile();
+  profile.gold = 1234;
+  profile.levels.bullets = 1;
+  profile.levels.wavePickup = 1;
+  const before = JSON.stringify(profile);
+  const restored = Core.migrateProfile(JSON.parse(before));
+  assert.equal(Core.isValidProfile(restored), true);
+  assert.equal(JSON.stringify(restored), before);
+  assert.equal(Core.getStats(restored).bullets, 2);
+  assert.equal(Core.upgradeCost(restored, "bullets"), 7500);
+  assert.equal(Core.upgradeCost(restored, "wavePickup"), null);
+});
+
+test("the three-bullet upgrade applies next run and survives saving at level two", () => {
+  const profile = Core.createProfile();
+  profile.levels.bullets = 1;
+  profile.gold = 8000;
+  const game = startedGame(profile);
+  assert.deepEqual(Core.buyUpgrade(profile, "bullets"), { success: true, cost: 7500 });
+  assert.equal(game.stats.bullets, 2);
+  const restored = Core.migrateProfile(JSON.parse(JSON.stringify(profile)));
+  assert.equal(restored.gold, 500);
+  assert.equal(restored.levels.bullets, 2);
+  assert.equal(Core.isValidProfile(restored), true);
+  game.start(restored);
+  game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
+  assert.equal(game.stats.bullets, 3);
+  assert.equal(game.bullets.length, 3);
+  assert.equal(Core.upgradeCost(restored, "bullets"), null);
+});
+
+test("three bullets deal full upgraded damage simultaneously without increasing fire rate", () => {
+  const profile = Core.createProfile();
+  profile.levels.bullets = 2;
+  profile.levels.damage = 2;
+  const game = startedGame(profile);
+  const target = enemyAt(game, game.player.x + 55, game.player.y, 120);
+  game.enemies.push(target);
+  game.update(1 / 60);
+  assert.equal(target.hp, 30);
+  const events = game.drainEvents();
+  assert.equal(events.filter(event => event.type === "hit" && event.damage === 30).length, 3);
+  assert.equal(events.filter(event => event.type === "shot").length, 1);
+  game.update(1 / 60);
+  assert.equal(target.hp, 30);
+  assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 0);
+});
+
+test("dual bullets fire simultaneously in parallel with full damage and one cooldown", () => {
+  const profile = Core.createProfile();
+  profile.levels.bullets = 1;
+  profile.levels.damage = 2;
+  const game = startedGame(profile);
+  game.enemies.push(enemyAt(game, game.player.x + 200, game.player.y, 1000));
+  game.update(1 / 60);
+  assert.equal(game.bullets.length, 2);
+  const [left, right] = game.bullets;
+  assert.equal(left.x, right.x);
+  assert.equal(right.y - left.y, 10);
+  assert.equal(left.vx, right.vx);
+  assert.equal(left.vy, right.vy);
+  assert.equal(left.damage, 30);
+  assert.equal(right.damage, 30);
+  assert.equal(left.remainingRange, right.remainingRange);
+  assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 1);
+  game.update(1 / 60);
+  assert.equal(game.bullets.length, 2);
+  assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 0);
+});
+
+test("both bullets can damage the same enemy without duplicating rewards for a kill", () => {
+  const profile = Core.createProfile();
+  profile.levels.bullets = 1;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  const target = enemyAt(game, game.player.x + 55, game.player.y, 100);
+  game.enemies.push(target);
+  game.update(1 / 60);
+  assert.equal(target.hp, 100 - game.stats.damage * 2);
+  assert.equal(game.drainEvents().filter(event => event.type === "hit").length, 2);
+  game.hitEnemy(target, target.hp);
+  assert.equal(game.kills, 1);
+  assert.equal(game.pickups.filter(pickup => pickup.kind === "gold").length, 1);
+
+  const lethal = startedGame(profile);
+  lethal.beginWave(1);
+  lethal.spawnRemaining = 0;
+  lethal.enemies.push(enemyAt(lethal, lethal.player.x + 55, lethal.player.y, 18));
+  lethal.update(1 / 60);
+  assert.equal(lethal.kills, 1);
+  assert.equal(lethal.pickups.filter(pickup => pickup.kind === "gold").length, 1);
+});
+
+test("two and three bullets stay inside circular weapon range at every firing angle", () => {
+  for (const level of [1, 2]) {
+    const profile = Core.createProfile();
+    profile.levels.bullets = level;
+    for (let i = 0; i < 8; i += 1) {
+      const game = startedGame(profile);
+      const angle = i * Math.PI / 4;
+      const origin = { x: game.player.x, y: game.player.y };
+      game.shoot(enemyAt(game, origin.x + Math.cos(angle) * 200, origin.y + Math.sin(angle) * 200));
+      const bullets = [...game.bullets];
+      for (let frame = 0; frame < 4; frame += 1) game.update(0.1);
+      for (const bullet of bullets) {
+        assert.ok(Math.abs(Math.hypot(bullet.x - origin.x, bullet.y - origin.y) - game.stats.range) < 1e-9);
+        assert.equal(bullet.remainingRange, 0);
+      }
+      assert.equal(game.bullets.length, 0);
+    }
+  }
+});
+
+test("both paired bullets can hit on the final clipped range segment", () => {
+  const profile = Core.createProfile();
+  profile.levels.bullets = 1;
+  const game = startedGame(profile);
+  game.shoot(enemyAt(game, game.player.x + 200, game.player.y));
+  const target = enemyAt(game, game.player.x + game.stats.range + 19, game.player.y, 100);
+  game.enemies.push(target);
+  for (let i = 0; i < 4; i += 1) game.update(0.1);
+  assert.equal(target.hp, 100 - game.stats.damage * 2);
+  assert.equal(game.bullets.length, 0);
+});
+
+test("two and three bullets keep the full upgraded range up to 960 units", () => {
+  for (const level of [1, 2]) {
+    const profile = Core.createProfile();
+    profile.levels.bullets = level;
+    profile.levels.range = Core.UPGRADES.range.maxLevel;
+    const game = startedGame(profile);
+    game.player.x = 200;
+    const origin = { x: game.player.x, y: game.player.y };
+    game.shoot(enemyAt(game, origin.x + 200, origin.y));
+    const bullets = [...game.bullets];
+    for (let i = 0; i < 10; i += 1) game.update(0.1);
+    assert.equal(game.stats.range, 960);
+    for (const bullet of bullets) {
+      assert.ok(Math.abs(Math.hypot(bullet.x - origin.x, bullet.y - origin.y) - 960) < 1e-9);
+      assert.equal(bullet.remainingRange, 0);
+    }
+    assert.equal(game.bullets.length, 0);
+  }
+});
+
+test("wave gold collection costs 2500 gold and unlocks permanently only once", () => {
+  const profile = Core.createProfile();
+  assert.equal(Core.getStats(profile).wavePickup, 0);
+  assert.equal(Core.upgradeCost(profile, "wavePickup"), 2500);
+  profile.gold = 2499;
+  const before = JSON.stringify(profile);
+  assert.equal(Core.buyUpgrade(profile, "wavePickup").success, false);
+  assert.equal(JSON.stringify(profile), before);
+  profile.gold = 2500;
+  assert.deepEqual(Core.buyUpgrade(profile, "wavePickup"), { success: true, cost: 2500 });
+  assert.equal(profile.gold, 0);
+  assert.equal(profile.levels.wavePickup, 1);
+  assert.equal(Core.getStats(profile).wavePickup, 1);
+  profile.gold = 2000;
+  assert.equal(Core.upgradeCost(profile, "wavePickup"), null);
+  assert.equal(Core.buyUpgrade(profile, "wavePickup").success, false);
+  assert.equal(profile.gold, 2000);
+  assert.equal(profile.levels.wavePickup, 1);
+  assert.equal(Core.isValidProfile(profile), true);
+});
+
+test("old saves add locked wave collection without resetting purchased dual bullets or records", () => {
+  const oldSave = Core.createProfile();
+  delete oldSave.levels.wavePickup;
+  oldSave.gold = 1500;
+  oldSave.levels.bullets = 1;
+  oldSave.levels.range = 4;
+  oldSave.bestWave = 9;
+  oldSave.totalRuns = 7;
+  const before = JSON.stringify(oldSave);
+  const migrated = Core.migrateProfile(oldSave);
+  assert.equal(JSON.stringify(oldSave), before);
+  assert.deepEqual(migrated, { ...oldSave, levels: { ...oldSave.levels, wavePickup: 0 } });
+  assert.equal(Core.getStats(migrated).bullets, 2);
+  assert.equal(Core.getStats(migrated).wavePickup, 0);
+  assert.equal(Core.isValidProfile(migrated), true);
+  for (const level of [-1, 2, 0.5, null, "1"]) {
+    const invalid = { ...migrated, levels: { ...migrated.levels, wavePickup: level } };
+    assert.equal(Core.migrateProfile(invalid), invalid);
+    assert.equal(Core.isValidProfile(invalid), false);
+  }
+});
+
+test("wave collection waits for a full clear, collects every distant coin once, and leaves medkits", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnRemaining = 1;
+  game.spawnTimer = 100;
+  game.fireTimer = 100;
+  const medkit = { kind: "health", x: 200, y: 200, age: 0 };
+  game.pickups.push(
+    { kind: "gold", x: 40, y: 40, value: 7, age: 0 },
+    { kind: "gold", x: Core.WIDTH - 40, y: Core.HEIGHT - 40, value: 11, age: 0 },
+    medkit,
+  );
+  game.update(1 / 60);
+  assert.equal(profile.gold, 0);
+  game.spawnRemaining = 0;
+  game.enemies.push(enemyAt(game, 40, 40, 100));
+  game.update(1 / 60);
+  assert.equal(profile.gold, 0);
+  game.enemies = [];
+  game.fireballs.push(fireballAt(50, 50, 20));
+  game.update(1 / 60);
+  assert.equal(profile.gold, 0);
+  assert.equal(game.waveActive, true);
+  game.fireballs = [];
+  game.update(1 / 60);
+  assert.equal(profile.gold, 18);
+  assert.equal(game.coins, 18);
+  assert.equal(game.waveActive, false);
+  assert.deepEqual(game.pickups, [medkit]);
+  const events = game.drainEvents();
+  const collected = events.filter(event => event.type === "gold");
+  assert.equal(collected.length, 1);
+  assert.equal(collected[0].value, 18);
+  assert.equal(events.filter(event => event.type === "clear").length, 1);
+  game.update(1 / 60);
+  assert.equal(profile.gold, 18);
+  assert.equal(game.drainEvents().filter(event => event.type === "gold").length, 0);
+});
+
+test("wave collection includes final kill loot and does not duplicate normally collected gold", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  const game = startedGame(profile);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  game.pickups.push(
+    { kind: "gold", x: game.player.x, y: game.player.y, value: 4, age: 0 },
+    { kind: "gold", x: 40, y: 40, value: 9, age: 0 },
+  );
+  const enemy = enemyAt(game, 40, 40, 26);
+  game.enemies.push(enemy);
+  game.killEnemy(enemy);
+  game.update(1 / 60);
+  assert.equal(profile.gold, 4 + 9 + Core.enemyGold(enemy));
+  assert.equal(game.coins, profile.gold);
+  assert.equal(game.pickups.length, 0);
+  assert.equal(game.drainEvents().filter(event => event.type === "gold").reduce((sum, event) => sum + event.value, 0), profile.gold);
+});
+
+test("wave collection works at every wave and respects the wallet cap", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  const game = startedGame(profile);
+  for (const wave of [1, 2]) {
+    game.beginWave(wave);
+    game.spawnRemaining = 0;
+    game.pickups.push({ kind: "gold", x: 40, y: 40, value: wave * 3, age: 0 });
+    game.update(1 / 60);
+    assert.equal(game.waveActive, false);
+    assert.equal(game.pickups.length, 0);
+  }
+  assert.equal(profile.gold, 9);
+  profile.gold = Core.MAX_GOLD - 3;
+  game.beginWave(3);
+  game.spawnRemaining = 0;
+  game.pickups.push(
+    { kind: "gold", x: 40, y: 40, value: Core.MAX_GOLD, age: 0 },
+    { kind: "gold", x: 60, y: 40, value: Core.MAX_GOLD, age: 0 },
+  );
+  game.update(1 / 60);
+  assert.equal(profile.gold, Core.MAX_GOLD);
+  assert.equal(game.coins, 12);
+  assert.equal(game.pickups.length, 0);
+  assert.equal(Core.isValidProfile(profile), true);
+});
+
+test("locked wave collection preserves manual pickup behavior", () => {
+  const game = startedGame();
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  game.pickups.push({ kind: "gold", x: 40, y: 40, value: 50, age: 0 });
+  game.update(1 / 60);
+  assert.equal(game.waveActive, false);
+  assert.equal(game.profile.gold, 0);
+  assert.equal(game.pickups.length, 1);
+});
+
+test("wave collection applies next run and survives saving", () => {
+  const profile = Core.createProfile();
+  profile.gold = 2500;
+  const game = startedGame(profile);
+  Core.buyUpgrade(profile, "wavePickup");
+  assert.equal(game.stats.wavePickup, 0);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  game.pickups.push({ kind: "gold", x: 40, y: 40, value: 9, age: 0 });
+  game.update(1 / 60);
+  assert.equal(profile.gold, 0);
+  const restored = Core.migrateProfile(JSON.parse(JSON.stringify(profile)));
+  game.start(restored);
+  assert.equal(game.stats.wavePickup, 1);
+  game.beginWave(1);
+  game.spawnRemaining = 0;
+  game.pickups.push({ kind: "gold", x: 40, y: 40, value: 9, age: 0 });
+  game.update(1 / 60);
+  assert.equal(restored.gold, 9);
+  assert.equal(restored.levels.wavePickup, 1);
+});
+
+test("dying or retreating never sweeps gold even with wave collection unlocked", () => {
+  const profile = Core.createProfile();
+  profile.levels.wavePickup = 1;
+  for (const reason of ["retreated", "overrun"]) {
+    const game = startedGame(profile);
+    game.beginWave(1);
+    game.spawnRemaining = 0;
+    game.pickups.push({ kind: "gold", x: 40, y: 40, value: 50, age: 0 });
+    if (reason === "overrun") {
+      game.player.hp = 1;
+      game.fireballs.push(fireballAt(game.player.x - 20, game.player.y, Core.FIREBALL_SPEED));
+      game.update(1 / 60);
+    } else {
+      game.finish(reason);
+      game.update(1 / 60);
+    }
+    assert.equal(game.phase, "ended");
+    assert.equal(game.profile.gold, 0);
+    assert.equal(game.pickups.length, 1);
+    assert.equal(game.drainEvents().filter(event => event.type === "gold").length, 0);
+  }
 });
 
 test("save migration does not conceal invalid data or reset existing range levels", () => {
@@ -266,19 +706,22 @@ test("auto-fire can hit an alien that overlaps the soldier", () => {
 });
 
 test("upgraded fire rates do not lose shots to simulation-step rounding", () => {
-  const profile = Core.createProfile();
-  profile.levels.fireRate = 15;
-  const game = startedGame(profile);
-  game.beginWave(1);
-  game.spawnRemaining = 0;
-  game.enemies = [enemyAt(game, game.player.x + 200, game.player.y, 1000000)];
-  game.drainEvents();
-  let shots = 0;
-  for (let i = 0; i < 600; i += 1) {
-    game.update(1 / 60);
-    shots += game.drainEvents().filter(event => event.type === "shot").length;
+  for (const bulletsLevel of [0, 1, 2]) {
+    const profile = Core.createProfile();
+    profile.levels.fireRate = 15;
+    profile.levels.bullets = bulletsLevel;
+    const game = startedGame(profile);
+    game.beginWave(1);
+    game.spawnRemaining = 0;
+    game.enemies = [enemyAt(game, game.player.x + 200, game.player.y, 1000000)];
+    game.drainEvents();
+    let shots = 0;
+    for (let i = 0; i < 600; i += 1) {
+      game.update(1 / 60);
+      shots += game.drainEvents().filter(event => event.type === "shot").length;
+    }
+    assert.ok(Math.abs(shots - game.stats.fireRate * 10) < 1);
   }
-  assert.ok(Math.abs(shots - game.stats.fireRate * 10) < 1);
 });
 
 test("collected gold is banked immediately and distant coins stay on the map", () => {
@@ -448,6 +891,325 @@ test("extreme wave stats and rewards remain finite and currency stays bounded", 
   assert.ok(Number.isFinite(settings.damage));
   assert.ok(Number.isInteger(settings.gold));
   assert.equal(settings.gold, Core.MAX_GOLD);
+});
+
+test("skeletons begin at wave 3 with a 15% spawn share and preserve existing enemy types", () => {
+  for (const wave of [1, 2]) {
+    const { skeleton } = skeletonEncounter(300, wave);
+    assert.equal(skeleton.type, "drone");
+  }
+  const game = startedGame();
+  game.beginWave(4);
+  const counts = {};
+  for (let i = 0; i < 100; i += 1) {
+    game.random = () => i / 100;
+    game.spawnEnemy();
+    const type = game.enemies.at(-1).type;
+    counts[type] = (counts[type] || 0) + 1;
+  }
+  assert.deepEqual(counts, { brute: 16, runner: 29, drone: 20, skeleton: 15, chicken: 20 });
+  game.random = () => 0.7;
+  game.spawnEnemy(true);
+  assert.equal(game.enemies.at(-1).type, "boss");
+  assert.equal(skeletonEncounter().skeleton.type, "skeleton");
+});
+
+test("skeleton health, movement, fireball damage, and gold scale with their wave", () => {
+  let previous;
+  for (const wave of [3, 7]) {
+    const { game, skeleton } = skeletonEncounter(300, wave);
+    const normal = Core.waveSettings(wave);
+    assert.equal(skeleton.maxHp, Math.round(normal.hp * 1.3));
+    assert.equal(skeleton.speed, normal.speed * 0.85);
+    assert.equal(skeleton.damage, normal.damage * 1.5);
+    assert.ok(Core.enemyGold(skeleton) > normal.gold);
+    if (previous) {
+      assert.ok(skeleton.maxHp > previous.maxHp);
+      assert.ok(skeleton.speed > previous.speed);
+      assert.ok(skeleton.damage > previous.damage);
+      assert.ok(Core.enemyGold(skeleton) > Core.enemyGold(previous));
+    }
+    game.killEnemy(skeleton);
+    assert.equal(game.pickups[0].value, Core.enemyGold(skeleton));
+    game.player.x = skeleton.x;
+    game.update(1 / 60);
+    assert.equal(game.profile.gold, Core.enemyGold(skeleton));
+    assert.equal(Core.isValidProfile(game.profile), true);
+    previous = skeleton;
+  }
+});
+
+test("skeletons approach from afar, retreat up close, and hold their firing distance", () => {
+  for (const [distance, direction] of [[500, -1], [100, 1], [300, 0]]) {
+    const { game, skeleton } = skeletonEncounter(distance);
+    const x = skeleton.x;
+    game.update(0.1);
+    assert.equal(Math.sign(skeleton.x - x), direction);
+  }
+  const { game, skeleton } = skeletonEncounter(400);
+  skeleton.castUntil = game.time + Core.SKELETON_CAST_TIME;
+  const position = { x: skeleton.x, y: skeleton.y };
+  game.update(0.1);
+  assert.deepEqual({ x: skeleton.x, y: skeleton.y }, position);
+});
+
+test("skeletons telegraph each fireball for 0.45 seconds and fire every 2 seconds", () => {
+  const { game, skeleton } = skeletonEncounter();
+  advanceFrames(game, 92);
+  assert.equal(skeleton.castUntil, null);
+  assert.equal(game.fireballs.length, 0);
+  advanceFrames(game, 1);
+  assert.ok(Math.abs(skeleton.castUntil - game.time - Core.SKELETON_CAST_TIME) < 1e-9);
+  assert.equal(game.drainEvents().filter(event => event.type === "skeletonCast").length, 1);
+  advanceFrames(game, 26);
+  assert.equal(game.fireballs.length, 0);
+  advanceFrames(game, 1);
+  assert.equal(game.fireballs.length, 1);
+  assert.equal(skeleton.castUntil, null);
+  const ball = game.fireballs[0];
+  assert.equal(ball.damage, skeleton.damage);
+  assert.equal(ball.radius, Core.FIREBALL_RADIUS);
+  assert.equal(ball.life, Core.FIREBALL_LIFETIME);
+  assert.ok(Math.abs(Math.hypot(ball.vx, ball.vy) - Core.FIREBALL_SPEED) < 1e-9);
+  assert.ok(ball.vx < 0);
+  assert.equal(game.drainEvents().filter(event => event.type === "fireballShot").length, 1);
+  advanceFrames(game, 119);
+  assert.equal(game.drainEvents().filter(event => event.type === "fireballShot").length, 0);
+  advanceFrames(game, 1);
+  assert.equal(game.drainEvents().filter(event => event.type === "fireballShot").length, 1);
+});
+
+test("skeletons aim at the player's position when firing, not when charging", () => {
+  const { game, skeleton } = skeletonEncounter();
+  advanceFrames(game, 93);
+  game.player.y += 80;
+  advanceFrames(game, 27);
+  const ball = game.fireballs[0];
+  const angle = Math.atan2(game.player.y - skeleton.y, game.player.x - skeleton.x);
+  assert.ok(Math.abs(ball.vx - Math.cos(angle) * Core.FIREBALL_SPEED) < 1e-9);
+  assert.ok(Math.abs(ball.vy - Math.sin(angle) * Core.FIREBALL_SPEED) < 1e-9);
+});
+
+test("fireballs travel straight and can be dodged instead of homing on the player", () => {
+  const { game } = skeletonEncounter();
+  advanceFrames(game, 120);
+  const ball = game.fireballs[0];
+  const velocity = { vx: ball.vx, vy: ball.vy };
+  const y = ball.y;
+  game.player.y += 100;
+  advanceFrames(game, 60);
+  assert.equal(game.player.hp, game.player.maxHp);
+  assert.ok(game.fireballs.includes(ball));
+  assert.deepEqual({ vx: ball.vx, vy: ball.vy }, velocity);
+  assert.ok(Math.abs(ball.y - y) < 1e-9);
+});
+
+test("skeletons do not fire outside range and give a full warning when entering range", () => {
+  const { game, skeleton } = skeletonEncounter(Core.SKELETON_ATTACK_RANGE + 1);
+  skeleton.speed = 0;
+  advanceFrames(game, 180);
+  assert.equal(skeleton.castUntil, null);
+  assert.equal(game.fireballs.length, 0);
+  skeleton.x = game.player.x + Core.SKELETON_ATTACK_RANGE;
+  game.update(1 / 60);
+  assert.ok(skeleton.castUntil > game.time);
+  assert.equal(game.fireballs.length, 0);
+  advanceFrames(game, 26);
+  assert.equal(game.fireballs.length, 0);
+  advanceFrames(game, 1);
+  assert.equal(game.fireballs.length, 1);
+});
+
+test("leaving a skeleton's attack range cancels its current cast", () => {
+  const { game, skeleton } = skeletonEncounter();
+  advanceFrames(game, 93);
+  assert.notEqual(skeleton.castUntil, null);
+  skeleton.speed = 0;
+  game.player.x = skeleton.x - Core.SKELETON_ATTACK_RANGE - 10;
+  advanceFrames(game, 30);
+  assert.equal(skeleton.castUntil, null);
+  assert.equal(game.fireballs.length, 0);
+  game.player.x = skeleton.x - 300;
+  game.update(1 / 60);
+  assert.equal(game.fireballs.length, 0);
+  assert.ok(skeleton.castUntil > game.time);
+});
+
+test("touching a skeleton does not cause contact damage", () => {
+  const { game } = skeletonEncounter(0);
+  game.update(0.1);
+  assert.equal(game.player.hp, game.player.maxHp);
+});
+
+test("a player bullet can kill a skeleton on the final cast frame and prevent its shot", () => {
+  const { game, skeleton } = skeletonEncounter();
+  skeleton.castUntil = game.time + 1 / 60;
+  game.bullets.push({
+    x: skeleton.x - 1, y: skeleton.y, prevX: skeleton.x - 1, prevY: skeleton.y,
+    vx: 1080, vy: 0, life: 1, remainingRange: 100, damage: skeleton.maxHp,
+  });
+  game.update(1 / 60);
+  assert.equal(game.kills, 1);
+  assert.equal(game.enemies.length, 0);
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.drainEvents().filter(event => event.type === "fireballShot").length, 0);
+  assert.equal(game.pickups[0].value, Core.enemyGold(skeleton));
+});
+
+test("auto-fire targets and kills skeletons before their first fireball", () => {
+  const { game, skeleton } = skeletonEncounter();
+  game.fireTimer = 0;
+  assert.equal(game.closestEnemy(), skeleton);
+  advanceFrames(game, 120);
+  assert.equal(skeleton.hp, 0);
+  assert.equal(game.kills, 1);
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.pickups[0].value, Core.enemyGold(skeleton));
+});
+
+test("chicken explosions can kill a casting skeleton and award its full gold", () => {
+  const { game, skeleton } = skeletonEncounter();
+  skeleton.castUntil = game.time + Core.SKELETON_CAST_TIME;
+  game.hitEnemy(skeleton, skeleton.hp - 1);
+  game.random = () => 0.9;
+  game.spawnEnemy();
+  const chicken = game.enemies.at(-1);
+  chicken.x = skeleton.x - 50;
+  chicken.y = skeleton.y;
+  game.killEnemy(chicken);
+  advanceFrames(game, 30);
+  assert.equal(game.kills, 2);
+  assert.equal(skeleton.hp, 0);
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.pickups.filter(pickup => pickup.kind === "gold").length, 2);
+  assert.ok(game.pickups.some(pickup => pickup.kind === "gold" && pickup.value === Core.enemyGold(skeleton)));
+});
+
+test("fired fireballs remain dangerous after the skeleton dies and delay wave clear", () => {
+  const { game, skeleton } = skeletonEncounter();
+  advanceFrames(game, 120);
+  const ball = game.fireballs[0];
+  const x = ball.x;
+  game.killEnemy(skeleton);
+  game.update(1 / 60);
+  assert.ok(ball.x < x);
+  assert.equal(game.enemies.length, 0);
+  assert.equal(game.waveActive, true);
+  advanceFrames(game, 60);
+  assert.equal(game.player.hp, game.player.maxHp - skeleton.damage + game.player.maxHp * 0.12);
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.waveActive, false);
+  const events = game.drainEvents();
+  assert.equal(events.filter(event => event.type === "hurt").length, 1);
+  assert.equal(events.filter(event => event.type === "clear").length, 1);
+});
+
+test("swept fireball collisions hit the player even when both endpoints miss", () => {
+  const game = startedGame();
+  game.fireballs.push(fireballAt(game.player.x - 80, game.player.y, 1600));
+  game.update(0.1);
+  assert.equal(game.player.hp, game.player.maxHp - 18);
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.drainEvents().filter(event => event.type === "fireballImpact").length, 1);
+});
+
+test("relative collision sweeps catch a player crossing a moving fireball", () => {
+  const game = startedGame();
+  game.stats.speed = 1000;
+  game.fireballs.push(fireballAt(game.player.x, game.player.y + 50, Core.FIREBALL_SPEED));
+  game.update(0.1, { x: 0, y: 1 });
+  assert.equal(game.player.hp, game.player.maxHp - 18);
+  assert.equal(game.fireballs.length, 0);
+});
+
+test("fireballs expire, leave the arena, and never travel beyond their remaining lifetime", () => {
+  const game = startedGame();
+  game.fireballs.push(fireballAt(game.player.x - 100, game.player.y, 1600, 0, 18, 0.02));
+  game.update(0.1);
+  assert.equal(game.player.hp, game.player.maxHp);
+  assert.equal(game.fireballs.length, 0);
+  game.fireballs.push(fireballAt(10, 50, -Core.FIREBALL_SPEED));
+  game.update(0.1);
+  assert.equal(game.fireballs.length, 0);
+  game.fireballs.push(fireballAt(50, 50, 0, 10));
+  advanceFrames(game, 240);
+  assert.equal(game.fireballs.length, 0);
+});
+
+test("simultaneous fireball hits respect the player's damage invulnerability", () => {
+  const game = startedGame();
+  game.player.hp = 20;
+  game.fireballs.push(
+    fireballAt(game.player.x - 20, game.player.y, Core.FIREBALL_SPEED),
+    fireballAt(game.player.x + 20, game.player.y, -Core.FIREBALL_SPEED),
+  );
+  game.update(1 / 60);
+  assert.equal(game.player.hp, 2);
+  assert.equal(game.phase, "running");
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.drainEvents().filter(event => event.type === "hurt").length, 1);
+});
+
+test("lethal fireballs end the run once, clear pending shots, and stop further damage", () => {
+  const game = startedGame();
+  game.player.hp = 10;
+  const later = fireballAt(game.player.x + 200, game.player.y, -Core.FIREBALL_SPEED);
+  game.fireballs.push(fireballAt(game.player.x - 20, game.player.y, Core.FIREBALL_SPEED), later);
+  game.update(1 / 60);
+  assert.equal(game.phase, "ended");
+  assert.equal(game.player.hp, 0);
+  assert.equal(game.report.reason, "overrun");
+  assert.equal(game.profile.totalRuns, 1);
+  assert.equal(game.fireballs.length, 0);
+  const time = game.time;
+  const x = later.x;
+  advanceFrames(game, 60);
+  assert.equal(game.time, time);
+  assert.equal(later.x, x);
+  assert.equal(game.profile.totalRuns, 1);
+  assert.equal(game.drainEvents().filter(event => event.type === "ended").length, 1);
+});
+
+test("pausing freezes skeleton casts and fireballs; retreat and restart discard them", () => {
+  const { game, skeleton } = skeletonEncounter();
+  advanceFrames(game, 93);
+  const castUntil = skeleton.castUntil;
+  const time = game.time;
+  game.pause();
+  advanceFrames(game, 300);
+  assert.equal(game.time, time);
+  assert.equal(skeleton.castUntil, castUntil);
+  assert.equal(game.fireballs.length, 0);
+  game.resume();
+  advanceFrames(game, 27);
+  assert.equal(game.fireballs.length, 1);
+  const ball = game.fireballs[0];
+  const snapshot = { ...ball };
+  game.pause();
+  advanceFrames(game, 300);
+  assert.deepEqual(ball, snapshot);
+  game.finish("retreated");
+  assert.equal(game.fireballs.length, 0);
+  game.start(game.profile);
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.enemies.length, 0);
+  assert.equal(game.time, 0);
+});
+
+test("restarting a live run discards incoming fireballs and old skeleton casts", () => {
+  const { game, skeleton } = skeletonEncounter();
+  advanceFrames(game, 93);
+  assert.notEqual(skeleton.castUntil, null);
+  game.shootFireball(skeleton);
+  const ball = game.fireballs[0];
+  const snapshot = { ...ball };
+  game.start(game.profile);
+  assert.equal(game.fireballs.length, 0);
+  assert.equal(game.enemies.length, 0);
+  assert.equal(game.time, 0);
+  advanceFrames(game, 120);
+  assert.deepEqual(ball, snapshot);
+  assert.equal(game.fireballs.length, 0);
 });
 
 test("bosses spawn at 15, 30, and 45 seconds, never before the first interval", () => {

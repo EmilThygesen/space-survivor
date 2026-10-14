@@ -99,9 +99,10 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
 .shop-wallet strong { display: flex; gap: 9px; align-items: center; justify-content: flex-end; margin-top: 7px; font-size: 29px; color: var(--gold); }
 .run-summary { display: grid; grid-template-columns: repeat(4, 1fr); background: #091721; border: 1px solid #2f454f; border-radius: 8px; padding: 16px; gap: 15px; margin-bottom: 24px; }
 .run-summary strong { display: block; font-size: 21px; margin-top: 7px; }
-.upgrade-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.upgrade-card { background: #0c1924; border: 1px solid #304653; border-radius: 9px; padding: 18px; }
+.upgrade-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.upgrade-card { grid-column: span 2; background: #0c1924; border: 1px solid #304653; border-radius: 9px; padding: 18px; }
 .upgrade-card.affordable { border-color: #527867; }
+.upgrade-card.advanced { grid-column: span 3; display: flex; flex-direction: column; }
 .upgrade-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .upgrade-symbol { width: 31px; height: 31px; color: var(--accent); }
 .upgrade-level { color: var(--muted); font-size: 9px; letter-spacing: .7px; }
@@ -113,6 +114,7 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
 .buy-button:hover:not(:disabled) { background: #315d45; }
 .buy-button:disabled { border-color: #283a43; color: #79909c; background: #172630; }
 .buy-button .price { color: var(--gold); }
+.upgrade-card.advanced .buy-button { margin-top: auto; }
 .buy-button:disabled .price { color: #a79772; }
 .armory-note { grid-column: 1 / -1; display: flex; flex-direction: column; justify-content: center; gap: 12px; border: 1px dashed #314652; border-radius: 9px; padding: 20px; color: #819dab; font-size: 12px; line-height: 1.7; }
 .armory-note strong { color: var(--gold); font-size: 13px; }
@@ -177,7 +179,8 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
   .shop-wallet .label { font-size: 7px; }
   .shop-wallet strong { font-size: 24px; }
   .shop-panel .intro { font-size: 12px; }
-  .upgrade-grid { grid-template-columns: repeat(2, 1fr); gap: 9px; }
+  .upgrade-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .upgrade-card, .upgrade-card.advanced { grid-column: span 1; }
   .upgrade-card { padding: 13px; }
   .upgrade-card h3 { font-size: 13px; }
   .upgrade-level { font-size: 8px; }
