@@ -31,7 +31,7 @@
     <p id="notice" class="notice" role="status" hidden></p>
 
     <section class="arena-shell" aria-label="Battlefield">
-      <canvas id="arena" width="1440" height="900" tabindex="0" aria-label="Space Survivor arena. Use WASD or arrow keys to move. Your soldier's two guns auto-fire at different nearby enemies within the shared, soldier-centered gold range circle. They share a target only when one enemy is in range."></canvas>
+      <canvas id="arena" width="1440" height="900" tabindex="0" aria-label="Space Survivor arena. Use WASD or arrow keys to move. Your soldier's two guns focus fire on the nearest living boss within the shared, soldier-centered gold range circle. Otherwise, they target different nearby enemies, sharing a target only when one enemy is in range."></canvas>
       <div class="arena-hud">
         <div class="wave-badge">
           <span class="status-dot"></span>
@@ -98,7 +98,7 @@
       <button id="startButton" class="primary-button" type="button">Deploy Level 1 <span aria-hidden="true">&rarr;</span></button>
       <button id="menuShopButton" class="secondary-button" type="button">Open armory</button>
     </div>
-    <p class="intro">Your soldier carries two guns, one in each hand. They auto-fire at different nearby enemies inside the shared, soldier-centered gold range circle, sharing a target only when one enemy is in range. Upgrade their reach and bullets per gun between runs. Chickens explode after a 1.5-second proximity fuse or immediately when killed. Use their blasts against the swarm. Skeletons attack from range with dodgeable fireballs; keep moving.</p>
+    <p class="intro">Your soldier carries two guns, one in each hand. Both focus fire on the nearest living boss inside the shared, soldier-centered gold range circle. Otherwise, they auto-fire at different nearby enemies, sharing a target only when one enemy is in range. Upgrade their reach and bullets per gun between runs. Chickens explode after a 1.5-second proximity fuse or immediately when killed. Use their blasts against the swarm. Skeletons attack from range with dodgeable fireballs; keep moving.</p>
     <div class="mission-steps">
       <div><span>01</span><p><strong>Survive 8 swarm waves</strong>Tougher aliens, plus a boss every 15 seconds until the finale. Bosses drop red crystals worth 150 gold each.</p></div>
       <div><span>02</span><p><strong>Grab the gold</strong>Run near dropped coins and crystals to pull them in.</p></div>

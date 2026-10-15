@@ -1287,7 +1287,121 @@ test("guns split a shared preferred target, giving the alternate to the closer g
   }
 });
 
-test("distinct gun targeting retargets after deaths and only shares the final available enemy", () => {
+test("both guns focus an in-range boss over nearer swarm enemies at either bullet tier", () => {
+  for (const type of ["boss", "overlord"]) {
+    for (const level of [0, 1]) {
+      for (const explicit of [false, true]) {
+        const profile = Core.createProfile();
+        profile.levels.bullets = level;
+        const game = startedGame(profile);
+        game.beginWave(type === "overlord" ? Core.LEVEL_WAVES : 1);
+        game.spawnRemaining = 0;
+        if (type === "boss") game.spawnEnemy(true);
+        const boss = game.enemies[0];
+        boss.x = game.player.x + 200;
+        boss.y = game.player.y;
+        boss.speed = 0;
+        boss.nextJumpAt = Infinity;
+        const upper = enemyAt(game, game.player.x + 80, game.player.y - 80, 1000);
+        const lower = enemyAt(game, game.player.x + 80, game.player.y + 80, 1000);
+        game.enemies = [upper, boss, lower];
+        assert.equal(game.closestEnemy(), upper);
+        assert.deepEqual(game.getGunPoses().map(gun => gun.target), [boss, boss]);
+        game.drainEvents();
+        if (explicit) game.shoot(upper);
+        else game.update(1 / 60);
+        const guns = game.getGunPoses();
+        assert.equal(game.bullets.length, (level + 1) * 2);
+        for (const bullet of game.bullets) {
+          assert.ok(Math.abs(Math.atan2(bullet.vy, bullet.vx) - guns[bullet.gunIndex].angle) < 1e-9);
+        }
+        game.fireTimer = 100;
+        game.update(0.1);
+        game.update(0.1);
+        assert.equal(boss.hp, boss.maxHp - game.stats.damage * (level + 1) * 2);
+        assert.equal(upper.hp, 1000);
+        assert.equal(lower.hp, 1000);
+        assert.equal(game.bulletsFired, (level + 1) * 2);
+        assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 1);
+      }
+    }
+  }
+});
+
+test("both guns choose the nearest living boss and split targets again after the bosses die", () => {
+  const game = startedGame();
+  const upper = enemyAt(game, game.player.x + 80, game.player.y - 35);
+  const lower = enemyAt(game, game.player.x + 80, game.player.y + 35);
+  const nearBoss = { ...enemyAt(game, game.player.x + 180, game.player.y), type: "boss" };
+  const farBoss = { ...enemyAt(game, game.player.x - 220, game.player.y), type: "boss" };
+  game.enemies = [farBoss, upper, nearBoss, lower];
+  for (let i = 0; i < 8; i += 1) {
+    game.player.angle = i * Math.PI / 4;
+    assert.deepEqual(game.getGunPoses().map(gun => gun.target), [nearBoss, nearBoss]);
+    game.enemies.reverse();
+  }
+  game.killEnemy(nearBoss);
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [farBoss, farBoss]);
+  game.killEnemy(farBoss);
+  assert.deepEqual(new Set(game.getGunPoses().map(gun => gun.target)), new Set([upper, lower]));
+  game.killEnemy(upper);
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [lower, lower]);
+});
+
+test("boss focus respects the shared circular range boundary and ignores dead bosses", () => {
+  for (const type of ["boss", "overlord"]) {
+    for (const level of [0, 15]) {
+      for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+        const profile = Core.createProfile();
+        profile.levels.range = level;
+        const game = startedGame(profile);
+        const upper = enemyAt(game, game.player.x + 80, game.player.y - 35);
+        const lower = enemyAt(game, game.player.x + 80, game.player.y + 35);
+        const boss = { ...enemyAt(game, game.player.x + dx * (game.stats.range + 1), game.player.y + dy * (game.stats.range + 1)), type };
+        const dead = { ...enemyAt(game, game.player.x + 40, game.player.y, 0), type };
+        game.enemies = [boss, dead, upper, lower];
+        assert.deepEqual(new Set(game.getGunPoses().map(gun => gun.target)), new Set([upper, lower]));
+        boss.x -= dx;
+        boss.y -= dy;
+        assert.deepEqual(game.getGunPoses().map(gun => gun.target), [boss, boss]);
+        boss.x += dx;
+        boss.y += dy;
+        assert.deepEqual(new Set(game.getGunPoses().map(gun => gun.target)), new Set([upper, lower]));
+        boss.x -= dx;
+        boss.y -= dy;
+        boss.hp = 0;
+        assert.deepEqual(new Set(game.getGunPoses().map(gun => gun.target)), new Set([upper, lower]));
+      }
+    }
+  }
+});
+
+test("switching to boss focus preserves the shared firing cooldown, pause, and inactive poses", () => {
+  const game = startedGame();
+  const upper = enemyAt(game, game.player.x + 80, game.player.y - 35, 1000);
+  const lower = enemyAt(game, game.player.x + 80, game.player.y + 35, 1000);
+  const boss = { ...enemyAt(game, game.player.x + game.stats.range + 1, game.player.y, 1000), type: "boss" };
+  game.enemies = [upper, lower, boss];
+  game.update(1 / 60);
+  assert.equal(game.bulletsFired, 2);
+  boss.x = game.player.x + 200;
+  game.update(1 / 60);
+  assert.equal(game.bulletsFired, 2);
+  const guns = game.getGunPoses();
+  assert.deepEqual(guns.map(gun => gun.target), [boss, boss]);
+  game.pause();
+  advanceFrames(game, 60, { x: 1, y: 0 });
+  assert.deepEqual(game.getGunPoses(), guns);
+  assert.equal(game.bulletsFired, 2);
+  game.resume();
+  boss.x = game.player.x + game.stats.range + 1;
+  assert.deepEqual(new Set(game.getGunPoses().map(gun => gun.target)), new Set([upper, lower]));
+  game.finish("retreat");
+  boss.x = game.player.x + 200;
+  assert.ok(game.getGunPoses().every(gun => gun.target === null));
+});
+
+test("distinct gun targeting retargets after deaths and only shares the final available non-boss enemy", () => {
   const game = startedGame();
   game.player.angle = 0;
   const near = enemyAt(game, game.player.x + 80, game.player.y);

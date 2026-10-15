@@ -287,12 +287,13 @@
       if (isBoss || finalBoss) this.events.push({ type: "boss", finalBoss });
     }
 
-    closestEnemy(origin = this.player, excluded = null) {
+    closestEnemy(origin = this.player, excluded = null, { bossesOnly = false } = {}) {
       let nearest = null;
       let distance = Infinity;
       const maxDistance = this.stats.range ** 2;
       for (const enemy of this.enemies) {
         if (enemy.hp <= 0 || enemy === excluded) continue;
+        if (bossesOnly && enemy.type !== "boss" && enemy.type !== "overlord") continue;
         const inRange = (enemy.x - this.player.x) ** 2 + (enemy.y - this.player.y) ** 2 <= maxDistance;
         const squared = (enemy.x - origin.x) ** 2 + (enemy.y - origin.y) ** 2;
         if (inRange && squared < distance) {
@@ -308,14 +309,15 @@
       const dx = Math.cos(p.angle);
       const dy = Math.sin(p.angle);
       const active = this.stats && (this.phase === "running" || this.phase === "paused");
+      const boss = active ? this.closestEnemy(p, null, { bossesOnly: true }) : null;
       const guns = [-1, 1].map((side, index) => {
         const x = p.x + dx * 4 - dy * side * 16;
         const y = p.y + dy * 4 + dx * side * 16;
-        const target = active ? this.closestEnemy({ x, y }) : null;
+        const target = active ? boss || this.closestEnemy({ x, y }) : null;
         return { index, x, y, angle: p.angle, target, muzzleFlash: p.muzzleFlash };
       });
       const [first, second] = guns;
-      if (first.target && first.target === second.target) {
+      if (!boss && first.target && first.target === second.target) {
         const firstAlternative = this.closestEnemy(first, first.target);
         const secondAlternative = this.closestEnemy(second, second.target);
         if (firstAlternative && secondAlternative) {
