@@ -1704,7 +1704,7 @@ test("health, speed, attack, and normal-alien gold increase every wave with a st
   );
 });
 
-test("stronger enemy types drop higher-value gold using their actual stats", () => {
+test("normal enemy rewards scale with strength while bosses drop 150-gold crystals", () => {
   const rewards = {};
   for (const [name, wave, roll, boss] of [
     ["drone", 1, 0.5, false],
@@ -1719,12 +1719,12 @@ test("stronger enemy types drop higher-value gold using their actual stats", () 
     game.spawnEnemy(boss);
     const enemy = game.enemies[0];
     game.killEnemy(enemy);
-    rewards[name] = game.pickups.find(pickup => pickup.kind === "gold").value;
+    rewards[name] = game.pickups.find(pickup => pickup.kind === (boss ? "crystal" : "gold")).value;
     assert.equal(rewards[name], Core.enemyGold(enemy));
   }
   assert.equal(rewards.drone, 4);
   assert.equal(rewards.chicken, 8);
-  assert.equal(rewards.boss, 36);
+  assert.equal(rewards.boss, 150);
   assert.equal(rewards.wave4drone, 10);
   assert.equal(rewards.brute, 20);
   assert.ok(rewards.boss > rewards.chicken);
@@ -1732,7 +1732,7 @@ test("stronger enemy types drop higher-value gold using their actual stats", () 
   assert.ok(rewards.brute > rewards.wave4drone);
 });
 
-test("every enemy type drops exactly twice its previously rounded gold value in every wave", () => {
+test("every wave preserves doubled normal rewards and fixed 150-gold boss crystals", () => {
   const types = new Set();
   for (let wave = 1; wave <= Core.LEVEL_WAVES; wave += 1) {
     for (const [roll, boss, finalBoss] of [[0.1, false, false], [0.3, false, false], [0.5, false, false], [0.7, false, false], [0.9, false, false], [0.5, true, false], ...(wave === Core.LEVEL_WAVES ? [[0.5, true, true]] : [])]) {
@@ -1745,15 +1745,160 @@ test("every enemy type drops exactly twice its previously rounded gold value in 
       types.add(enemy.type);
       const strength = enemy.maxHp / 26 * Math.max(1, enemy.speed / 61) * Math.max(1, enemy.damage / 8);
       const previousGold = Math.max(1, Math.ceil(2 * Math.sqrt(strength)));
-      const expected = Math.min(Core.MAX_GOLD, previousGold * 2);
+      const expected = boss ? 150 : Math.min(Core.MAX_GOLD, previousGold * 2);
       assert.equal(Core.enemyGold(enemy), expected, `${enemy.type} at wave ${wave}`);
       game.killEnemy(enemy);
       assert.equal(game.kills, 1);
       if (finalBoss) assert.equal(game.profile.gold, expected);
-      else assert.equal(game.pickups.find(pickup => pickup.kind === "gold").value, expected);
+      else assert.equal(game.pickups.find(pickup => pickup.kind === (boss ? "crystal" : "gold")).value, expected);
     }
   }
   assert.deepEqual([...types].sort(), ["boss", "brute", "chicken", "drone", "overlord", "runner", "skeleton"]);
+});
+
+test("each regular boss drops exactly one red crystal worth 150 gold regardless of wave or wounds", () => {
+  assert.equal(Core.BOSS_CRYSTAL_VALUE, 150);
+  for (let wave = 1; wave <= Core.LEVEL_WAVES; wave += 1) {
+    const game = startedGame();
+    game.beginWave(wave);
+    game.enemies = [];
+    game.spawnEnemy(true);
+    const boss = game.enemies[0];
+    game.hitEnemy(boss, boss.hp - 1);
+    game.killEnemy(boss);
+    game.killEnemy(boss);
+    assert.equal(game.kills, 1);
+    assert.equal(game.profile.gold, 0);
+    assert.deepEqual(game.pickups, [{ kind: "crystal", x: boss.x, y: boss.y, value: 150, age: 0, magnetized: false }]);
+    assert.equal(game.drainEvents().filter(event => event.type === "kill").length, 1);
+  }
+});
+
+test("crystals use normal and upgraded pickup attraction, freeze on pause, and credit 150 gold once", () => {
+  for (const [level, distance] of [[0, 60], [3, 110]]) {
+    const profile = Core.createProfile();
+    profile.levels.pickup = level;
+    const game = startedGame(profile);
+    game.beginWave(1);
+    game.spawnRemaining = 1;
+    game.spawnTimer = 100;
+    game.fireTimer = 100;
+    game.spawnEnemy(true);
+    const boss = game.enemies[0];
+    boss.x = game.player.x + distance;
+    boss.y = game.player.y;
+    game.killEnemy(boss);
+    const crystal = game.pickups[0];
+    game.update(1 / 60);
+    assert.equal(crystal.magnetized, true);
+    assert.ok(crystal.x < boss.x);
+    game.pause();
+    const paused = JSON.stringify(game.pickups);
+    advanceFrames(game, 60);
+    assert.equal(JSON.stringify(game.pickups), paused);
+    assert.equal(profile.gold, 0);
+    game.resume();
+    advanceFrames(game, 180);
+    assert.equal(profile.gold, 150);
+    assert.equal(game.coins, 150);
+    assert.equal(game.pickups.length, 0);
+    const events = game.drainEvents().filter(event => event.type === "gold");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].value, 150);
+    assert.equal(events[0].kind, "crystal");
+    assert.equal(Core.isValidProfile(JSON.parse(JSON.stringify(profile))), true);
+  }
+});
+
+test("wave collection banks mixed crystals and coins once and preserves crystal animation metadata", () => {
+  for (const bank of [0, Core.MAX_GOLD - 100, Core.MAX_GOLD]) {
+    const profile = Core.createProfile();
+    profile.gold = bank;
+    profile.levels.wavePickup = 1;
+    const game = startedGame(profile);
+    game.beginWave(1);
+    game.spawnRemaining = 0;
+    game.fireTimer = 100;
+    for (let i = 0; i < 2; i += 1) {
+      game.spawnEnemy(true);
+      const boss = game.enemies.at(-1);
+      boss.x = 40 + i * 50;
+      boss.y = 40;
+      game.killEnemy(boss);
+    }
+    const crystal = game.pickups[0];
+    game.pickups.push(
+      { kind: "gold", x: 40, y: Core.HEIGHT - 40, value: 7, age: 0 },
+      { kind: "health", x: 200, y: 200, age: 0 },
+    );
+    game.update(1 / 60);
+    const credited = Math.min(307, Core.MAX_GOLD - bank);
+    assert.equal(profile.gold, bank + credited);
+    assert.equal(game.coins, credited);
+    assert.equal(game.pickups.length, 0);
+    const events = game.drainEvents().filter(event => event.type === "gold");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].value, credited);
+    assert.deepEqual(events[0].coins, [
+      { x: 40, y: 40, kind: "crystal" },
+      { x: 90, y: 40, kind: "crystal" },
+      { x: 40, y: Core.HEIGHT - 40 },
+    ]);
+    crystal.kind = "gold";
+    crystal.x = 300;
+    assert.equal(events[0].coins[0].kind, "crystal");
+    assert.equal(events[0].coins[0].x, 40);
+    game.update(1 / 60);
+    assert.equal(profile.gold, bank + credited);
+    assert.equal(game.drainEvents().some(event => event.type === "gold"), false);
+  }
+});
+
+test("uncollected crystals survive wave boundaries when collection is locked or off", () => {
+  for (const [owned, enabled] of [[0, true], [1, false]]) {
+    const profile = Core.createProfile();
+    profile.levels.wavePickup = owned;
+    profile.wavePickupEnabled = enabled;
+    const game = startedGame(profile);
+    game.beginWave(1);
+    game.spawnRemaining = 0;
+    game.fireTimer = 100;
+    game.spawnEnemy(true);
+    const boss = game.enemies[0];
+    boss.x = 40;
+    boss.y = 40;
+    game.killEnemy(boss);
+    const crystal = game.pickups[0];
+    game.pickups.push({ kind: "health", x: 200, y: 200, age: 0 });
+    game.update(1 / 60);
+    assert.equal(profile.gold, 0);
+    assert.deepEqual(game.pickups, [crystal]);
+    game.beginWave(2);
+    assert.deepEqual(game.pickups, [crystal]);
+    game.player.x = crystal.x;
+    game.player.y = crystal.y;
+    game.update(1 / 60);
+    assert.equal(profile.gold, 150);
+    assert.equal(game.pickups.some(pickup => pickup.kind === "crystal"), false);
+  }
+});
+
+test("a boss killed by a chicken explosion still drops a single 150-gold crystal", () => {
+  const { game, chicken } = chickenEncounter(260);
+  game.spawnEnemy(true);
+  const boss = game.enemies.at(-1);
+  boss.x = chicken.x + 70;
+  boss.y = chicken.y;
+  boss.hp = 1;
+  game.random = () => 0.5;
+  game.killEnemy(chicken);
+  game.killEnemy(boss);
+  assert.equal(game.kills, 2);
+  assert.deepEqual(game.pickups.map(pickup => [pickup.kind, pickup.value]), [["gold", 8], ["crystal", 150]]);
+  game.stats.pickup = Core.WIDTH;
+  for (let i = 0; i < 30; i += 1) game.update(0.1);
+  assert.equal(game.profile.gold, 158);
+  assert.equal(game.coins, 158);
 });
 
 test("health, speed, and attack buffs each increase gold rewards", () => {
@@ -1796,7 +1941,7 @@ test("chicken chain kills award full strength-based rewards that can be collecte
   assert.equal(Core.isValidProfile(game.profile), true);
 });
 
-test("high-value gold drops respect the wallet limit and remain valid save data", () => {
+test("boss crystal pickups respect the wallet limit and remain valid save data", () => {
   const profile = Core.createProfile();
   profile.gold = Core.MAX_GOLD - 1;
   const game = startedGame(profile);
@@ -1806,7 +1951,8 @@ test("high-value gold drops respect the wallet limit and remain valid save data"
   boss.x = game.player.x;
   boss.y = game.player.y;
   game.killEnemy(boss);
-  assert.equal(game.pickups[0].value, 36);
+  assert.equal(game.pickups[0].kind, "crystal");
+  assert.equal(game.pickups[0].value, 150);
   game.update(1 / 60);
   assert.equal(profile.gold, Core.MAX_GOLD);
   assert.equal(game.coins, 1);
@@ -2230,7 +2376,7 @@ test("bosses also spawn during the countdown between normal waves", () => {
   assert.equal(game.wave, 2);
 });
 
-test("bosses are auto-targeted, take bullet damage, drop gold, and block wave completion", () => {
+test("bosses are auto-targeted, take bullet damage, drop crystals, and block wave completion", () => {
   const game = startedGame();
   game.beginWave(1);
   game.spawnRemaining = 0;
@@ -2244,7 +2390,7 @@ test("bosses are auto-targeted, take bullet damage, drop gold, and block wave co
   assert.equal(game.waveActive, true);
   game.hitEnemy(boss, boss.maxHp);
   assert.equal(game.kills, 1);
-  assert.ok(game.pickups.some(pickup => pickup.kind === "gold"));
+  assert.ok(game.pickups.some(pickup => pickup.kind === "crystal" && pickup.value === 150));
   game.update(1 / 60);
   assert.equal(game.enemies.length, 0);
   assert.equal(game.waveActive, false);
@@ -2547,18 +2693,23 @@ test("all nine wave clears end in a single victory without wave ten", () => {
   assert.equal(Core.isValidProfile(JSON.parse(JSON.stringify(profile))), true);
 });
 
-test("the final boss bounty is banked once even with automatic wave pickup off or a full wallet", () => {
+test("the final boss's 150-gold crystal is banked once even with wave pickup off or a full wallet", () => {
   for (const bank of [0, Core.MAX_GOLD - 2, Core.MAX_GOLD]) {
     const profile = Core.createProfile();
     profile.gold = bank;
     profile.wavePickupEnabled = false;
     const { game, boss } = finalBossEncounter(300, profile);
+    assert.equal(Core.enemyGold(boss), 150);
     const reward = Math.min(Core.MAX_GOLD - bank, Core.enemyGold(boss));
     game.killEnemy(boss);
     game.killEnemy(boss);
     assert.equal(profile.gold, bank + reward);
     assert.equal(game.coins, reward);
-    assert.equal(game.pickups.some(pickup => pickup.kind === "gold"), false);
+    assert.equal(game.pickups.some(pickup => pickup.kind === "gold" || pickup.kind === "crystal"), false);
+    const collected = game.drainEvents().filter(event => event.type === "gold");
+    assert.equal(collected.length, 1);
+    assert.equal(collected[0].kind, "crystal");
+    assert.equal(collected[0].value, reward);
     game.update(1 / 60);
     assert.equal(game.report.reason, "victory");
     assert.equal(game.report.gold, reward);

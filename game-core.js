@@ -14,6 +14,7 @@
   const BASE_ALIEN_STATS = Object.freeze({ hp: 26, speed: 61, damage: 8 });
   const BOSS_INTERVAL = 15;
   const BOSS_HEALTH_MULTIPLIER = 20;
+  const BOSS_CRYSTAL_VALUE = 150;
   const LEVEL_WAVES = 9;
   const FINAL_BOSS_HEALTH_MULTIPLIER = 30;
   const FINAL_BOSS_RADIUS = 76;
@@ -45,10 +46,10 @@
     speed: { name: "Run speed", description: "Stay ahead of the swarm.", baseCost: 25, maxLevel: 12 },
     hp: { name: "Max health", description: "Reinforce your combat suit.", baseCost: 25, maxLevel: 25 },
     healthRegen: { name: "Health regeneration", description: "Restore health automatically each second.", baseCost: 100, maxLevel: 10 },
-    pickup: { name: "Gold pickup radius", description: "Pull in coins from farther away.", baseCost: 20, maxLevel: 15 },
+    pickup: { name: "Gold pickup radius", description: "Pull in coins and crystals from farther away.", baseCost: 20, maxLevel: 15 },
     critChance: { name: "Crit Chance %", description: "Give each bullet a chance to deal double damage.", baseCost: 500, maxLevel: 10 },
     bullets: { name: "Dual bullets", description: "Make each gun fire two full-damage bullets, four total.", baseCost: 2500, maxLevel: 1 },
-    wavePickup: { name: "Wave gold collection", description: "Collect all remaining gold when you clear a wave.", baseCost: 2500, maxLevel: 1 },
+    wavePickup: { name: "Wave gold collection", description: "Collect all remaining coins and crystals when you clear a wave.", baseCost: 2500, maxLevel: 1 },
   });
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -147,6 +148,7 @@
   }
 
   function enemyGold(enemy) {
+    if (enemy.type === "boss" || enemy.type === "overlord") return BOSS_CRYSTAL_VALUE;
     const strength = enemy.maxHp / BASE_ALIEN_STATS.hp
       * Math.max(1, enemy.speed / BASE_ALIEN_STATS.speed)
       * Math.max(1, enemy.damage / BASE_ALIEN_STATS.damage);
@@ -451,8 +453,9 @@
       enemy.hp = 0;
       this.kills += 1;
       const value = enemyGold(enemy);
-      if (enemy.type === "overlord") this.collectGold(value, enemy.x, enemy.y);
-      else this.pickups.push({ kind: "gold", x: enemy.x, y: enemy.y, value, age: 0, magnetized: false });
+      const kind = enemy.type === "boss" || enemy.type === "overlord" ? "crystal" : "gold";
+      if (enemy.type === "overlord") this.collectGold(value, enemy.x, enemy.y, { kind });
+      else this.pickups.push({ kind, x: enemy.x, y: enemy.y, value, age: 0, magnetized: false });
       if (this.random() < 0.065) this.pickups.push({ kind: "health", x: enemy.x + 12, y: enemy.y + 10, age: 0 });
       this.events.push({ type: "kill", x: enemy.x, y: enemy.y, color: enemy.color, radius: enemy.radius });
       if (enemy.type === "chicken") {
@@ -461,11 +464,11 @@
       }
     }
 
-    collectGold(value, x, y, coins) {
+    collectGold(value, x, y, { coins, kind = "gold" } = {}) {
       const credited = Math.min(value, MAX_GOLD - this.profile.gold);
       this.coins += credited;
       this.profile.gold += credited;
-      this.events.push({ type: "gold", x, y, value: credited, ...(coins ? { coins } : {}) });
+      this.events.push({ type: "gold", x, y, value: credited, ...(coins ? { coins } : {}), ...(kind === "crystal" ? { kind } : {}) });
     }
 
     resolveExplosions() {
@@ -676,7 +679,7 @@
         }
         if (distance <= this.stats.pickup) pickup.magnetized = true;
         if (distance <= p.radius + 7) {
-          this.collectGold(pickup.value, pickup.x, pickup.y);
+          this.collectGold(pickup.value, pickup.x, pickup.y, { kind: pickup.kind });
           return false;
         }
         if (pickup.magnetized && distance > 0) {
@@ -693,13 +696,13 @@
           let value = 0;
           const coins = [];
           this.pickups = this.pickups.filter(pickup => {
-            if (pickup.kind !== "gold") return true;
+            if (pickup.kind !== "gold" && pickup.kind !== "crystal") return true;
             value = Math.min(MAX_GOLD, value + pickup.value);
-            coins.push({ x: pickup.x, y: pickup.y });
+            coins.push({ x: pickup.x, y: pickup.y, ...(pickup.kind === "crystal" ? { kind: pickup.kind } : {}) });
             return false;
           });
-          // Bank immediately; copied positions animate the coins without risking saved rewards.
-          if (value > 0) this.collectGold(value, p.x, p.y, coins);
+          // Bank immediately; copied pickups animate without risking saved rewards.
+          if (value > 0) this.collectGold(value, p.x, p.y, { coins });
         }
         this.waveActive = false;
         this.wavesCleared = this.wave;
@@ -718,5 +721,5 @@
     }
   }
 
-  return { WIDTH, HEIGHT, MAX_GOLD, CRIT_DAMAGE_MULTIPLIER, BASE_ALIEN_STATS, BOSS_INTERVAL, LEVEL_WAVES, FINAL_BOSS_HEALTH_MULTIPLIER, FINAL_BOSS_SPEED, FINAL_BOSS_JUMP_RANGE, FINAL_BOSS_JUMP_COOLDOWN, FINAL_BOSS_JUMP_WINDUP, FINAL_BOSS_JUMP_DURATION, FINAL_BOSS_JUMP_RECOVERY, FINAL_BOSS_SLAM_RADIUS, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, SKELETON_START_WAVE, SKELETON_SPAWN_CHANCE, SKELETON_ATTACK_RANGE, SKELETON_KEEP_DISTANCE, SKELETON_FIRE_INTERVAL, SKELETON_CAST_TIME, FIREBALL_SPEED, FIREBALL_RADIUS, FIREBALL_LIFETIME, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, toggleWavePickup, waveSettings, enemyGold, segmentCircleHit, Game };
+  return { WIDTH, HEIGHT, MAX_GOLD, CRIT_DAMAGE_MULTIPLIER, BASE_ALIEN_STATS, BOSS_INTERVAL, BOSS_CRYSTAL_VALUE, LEVEL_WAVES, FINAL_BOSS_HEALTH_MULTIPLIER, FINAL_BOSS_SPEED, FINAL_BOSS_JUMP_RANGE, FINAL_BOSS_JUMP_COOLDOWN, FINAL_BOSS_JUMP_WINDUP, FINAL_BOSS_JUMP_DURATION, FINAL_BOSS_JUMP_RECOVERY, FINAL_BOSS_SLAM_RADIUS, CHICKEN_SPAWN_CHANCE, CHICKEN_TRIGGER_DISTANCE, CHICKEN_FUSE_DELAY, CHICKEN_EXPLOSION_RADIUS, SKELETON_START_WAVE, SKELETON_SPAWN_CHANCE, SKELETON_ATTACK_RANGE, SKELETON_KEEP_DISTANCE, SKELETON_FIRE_INTERVAL, SKELETON_CAST_TIME, FIREBALL_SPEED, FIREBALL_RADIUS, FIREBALL_LIFETIME, UPGRADES, createProfile, migrateProfile, isValidProfile, getStats, upgradeCost, buyUpgrade, toggleWavePickup, waveSettings, enemyGold, segmentCircleHit, Game };
 });

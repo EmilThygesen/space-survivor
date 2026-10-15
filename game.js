@@ -255,7 +255,7 @@
     }
     const note = document.createElement("aside");
     note.className = "armory-note";
-    note.innerHTML = "<strong>Your gold stays with you.</strong><span>Collected coins and upgrades are saved locally. Clearing a swarm wave restores 12% health and removes unused medkits. Green medkits heal another 22%.</span>";
+    note.innerHTML = "<strong>Your gold stays with you.</strong><span>Collected coins, crystals, and upgrades are saved locally. Clearing a swarm wave restores 12% health and removes unused medkits. Green medkits heal another 22%.</span>";
     grid.append(note);
   }
 
@@ -519,6 +519,7 @@
             elapsed: 0,
             value: event.value,
             coins: event.coins.map((coin, index) => ({
+              kind: coin.kind,
               startX: coin.x, startY: coin.y, x: coin.x, y: coin.y, prevX: coin.x, prevY: coin.y,
               delay: reducedMotion ? 0 : index % 8 * 0.025,
               duration: 2 * (reducedMotion ? 0.18 : 0.7 + Math.hypot(coin.x - game.player.x, coin.y - game.player.y) / Math.hypot(Core.WIDTH, Core.HEIGHT) * 0.5),
@@ -528,8 +529,9 @@
           });
           tone(240, 0.3, 0.025, "triangle", 900);
         } else {
-          if (event.value > 0) floaters.push({ x: event.x, y: event.y - 15, text: `+${event.value}`, color: "#f4c46c", life: 0.75 });
-          burst(event.x, event.y, "#f4c46c", 4, 65);
+          const color = event.kind === "crystal" ? "#ff617d" : "#f4c46c";
+          if (event.value > 0) floaters.push({ x: event.x, y: event.y - 15, text: `+${event.value}`, color, life: 0.75 });
+          burst(event.x, event.y, color, 4, 65);
           tone(820, 0.055, 0.018, "sine", 1200);
         }
       }
@@ -664,6 +666,22 @@
     ctx.restore();
   }
 
+  function drawRedCrystal(x, y, age) {
+    circle(x, y + 6, 10, "#0005");
+    ctx.save(); ctx.translate(x, y + Math.sin(age * 3) * 1.5);
+    ctx.fillStyle = "#b92545";
+    ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(8, -4); ctx.lineTo(6, 7); ctx.lineTo(0, 12); ctx.lineTo(-6, 7); ctx.lineTo(-8, -4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#ff8396";
+    ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(-8, -4); ctx.lineTo(0, -2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#f34b66";
+    ctx.beginPath(); ctx.moveTo(-8, -4); ctx.lineTo(0, -2); ctx.lineTo(0, 12); ctx.lineTo(-6, 7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#e03155";
+    ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(8, -4); ctx.lineTo(0, -2); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#ffc0ca"; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(-5, -4); ctx.stroke();
+    ctx.restore();
+  }
+
   function animateGoldWaves(dt) {
     for (let i = goldWaves.length - 1; i >= 0; i -= 1) {
       const wave = goldWaves[i];
@@ -682,7 +700,7 @@
         coin.y = coin.startY + dy * progress + (distance ? dx / distance * arc : 0);
         if (t === 1) {
           coin.arrived = true;
-          burst(game.player.x, game.player.y, "#f4c46c", 2, 70);
+          burst(game.player.x, game.player.y, coin.kind === "crystal" ? "#ff617d" : "#f4c46c", 2, 70);
         }
       }
       if (wave.coins.every(coin => coin.arrived)) {
@@ -1004,8 +1022,8 @@
       ctx.fillStyle = "#e3d7af"; ctx.fillRect(16, -2.5, 13, 5);
       if (pose.muzzleFlash > 0) {
         ctx.fillStyle = "#ffe8a7";
-        ctx.beginPath(); ctx.moveTo(29, -4); ctx.lineTo(36, -8); ctx.lineTo(34, -2); ctx.lineTo(43, 0); ctx.lineTo(34, 2); ctx.lineTo(36, 8); ctx.lineTo(29, 4); ctx.closePath(); ctx.fill();
-        circle(29, 0, 3, "#fff8d8");
+        ctx.beginPath(); ctx.moveTo(29, -3); ctx.lineTo(34, -5.5); ctx.lineTo(32.5, -1.5); ctx.lineTo(39, 0); ctx.lineTo(32.5, 1.5); ctx.lineTo(34, 5.5); ctx.lineTo(29, 3); ctx.closePath(); ctx.fill();
+        circle(29, 0, 2, "#fff8d8");
       }
       ctx.restore();
     }
@@ -1023,6 +1041,8 @@
     for (const pickup of game.pickups) {
       if (pickup.kind === "gold") {
         drawGoldCoin(pickup.x, pickup.y, pickup.age);
+      } else if (pickup.kind === "crystal") {
+        drawRedCrystal(pickup.x, pickup.y, pickup.age);
       } else {
         ctx.fillStyle = "#153f35"; ctx.fillRect(pickup.x - 10, pickup.y - 10, 20, 20);
         ctx.strokeStyle = "#7df1d5"; ctx.strokeRect(pickup.x - 10, pickup.y - 10, 20, 20);
@@ -1033,11 +1053,12 @@
       for (const coin of wave.coins) {
         if (coin.arrived) continue;
         if (!reducedMotion && wave.elapsed >= coin.delay) {
-          ctx.strokeStyle = "#f4c46c88"; ctx.lineWidth = 2;
+          ctx.strokeStyle = coin.kind === "crystal" ? "#ff617d88" : "#f4c46c88"; ctx.lineWidth = 2;
           ctx.beginPath(); ctx.moveTo(coin.prevX, coin.prevY); ctx.lineTo(coin.x, coin.y); ctx.stroke();
-          circle(coin.x, coin.y, 13, "#f4c46c22");
+          circle(coin.x, coin.y, 13, coin.kind === "crystal" ? "#ff617d22" : "#f4c46c22");
         }
-        drawGoldCoin(coin.x, coin.y, wave.elapsed * 2);
+        if (coin.kind === "crystal") drawRedCrystal(coin.x, coin.y, wave.elapsed * 2);
+        else drawGoldCoin(coin.x, coin.y, wave.elapsed * 2);
       }
     }
     const gunPoses = game.getGunPoses();
@@ -1057,10 +1078,19 @@
       if (enemy.type !== "overlord" || enemy.jump?.phase !== "airborne") drawEnemy(enemy);
     }
     for (const bullet of game.bullets) {
-      const length = Math.hypot(bullet.vx, bullet.vy);
-      ctx.strokeStyle = bullet.critical ? "#ff91b566" : "#d6b75c66"; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.moveTo(bullet.x - bullet.vx / length * 27, bullet.y - bullet.vy / length * 27); ctx.lineTo(bullet.x, bullet.y); ctx.stroke();
-      circle(bullet.x, bullet.y, 2.6, bullet.critical ? "#ffd6eb" : "#fff3b9");
+      ctx.save();
+      ctx.translate(bullet.x, bullet.y);
+      ctx.rotate(Math.atan2(bullet.vy, bullet.vx));
+      ctx.fillStyle = bullet.critical ? "#ee8eb8" : "#e3bd76";
+      ctx.beginPath();
+      ctx.moveTo(-4.5, -2); ctx.lineTo(1, -2);
+      ctx.quadraticCurveTo(3, -2, 5, 0); ctx.quadraticCurveTo(3, 2, 1, 2);
+      ctx.lineTo(-4.5, 2); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = bullet.critical ? "#ffe0ee" : "#fff0c4";
+      ctx.fillRect(-3, -1.3, 4, 0.8);
+      ctx.fillStyle = bullet.critical ? "#a24d76" : "#87623d";
+      ctx.fillRect(-4.5, -2, 1, 4);
+      ctx.restore();
     }
     for (const fireball of game.fireballs) drawFireball(fireball);
     drawPlayer(gunPoses);

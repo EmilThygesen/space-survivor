@@ -127,24 +127,22 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
 .run-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: #091721; border: 1px solid #2f454f; border-radius: 8px; padding: 16px; gap: 15px; margin-bottom: 24px; }
 .run-summary strong { display: block; font-size: 21px; margin-top: 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .run-summary .label { line-height: 1.5; }
-.upgrade-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
-.upgrade-card { grid-column: span 2; background: #0c1924; border: 1px solid #304653; border-radius: 9px; padding: 18px; }
+.upgrade-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.upgrade-card { display: flex; flex-direction: column; background: #0c1924; border: 1px solid #304653; border-radius: 9px; padding: 13px; }
 .upgrade-card.affordable { border-color: #527867; }
-.upgrade-card.advanced { grid-column: span 3; display: flex; flex-direction: column; }
-.upgrade-card.advanced-start { grid-column: 1 / span 3; }
-.upgrade-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.upgrade-symbol { width: 31px; height: 31px; color: var(--accent); }
+.upgrade-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 10px; }
+.upgrade-symbol { width: 26px; height: 26px; color: var(--accent); }
 .upgrade-level { color: var(--muted); font-size: 9px; letter-spacing: .7px; }
-.upgrade-card h3 { font-size: 15px; margin: 0 0 5px; }
+.upgrade-card h3 { font-size: 14px; margin: 0 0 5px; }
 .upgrade-card p { font-size: 11px; color: var(--muted); margin: 0; }
-.upgrade-values { margin: 17px 0; font-size: 16px; font-weight: 700; color: #e2efe9; }
-.upgrade-values span { color: #647e8b; font-size: 13px; margin: 0 6px; }
-.buy-button { width: 100%; background: #244537; color: #a3f1cb; border: 1px solid #49775b; border-radius: 5px; padding: 9px 10px; font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; gap: 10px; }
+.upgrade-values { margin: 12px 0; font-size: 14px; font-weight: 700; color: #e2efe9; }
+.upgrade-values span { display: inline-block; color: #647e8b; font-size: 12px; margin: 0 4px; }
+.buy-button { width: 100%; background: #244537; color: #a3f1cb; border: 1px solid #49775b; border-radius: 5px; padding: 8px; font-size: 11px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 6px; }
 .buy-button:hover:not(:disabled) { background: #315d45; }
 .buy-button:disabled { border-color: #283a43; color: #79909c; background: #172630; }
 .buy-button .price { color: var(--gold); }
 .buy-button[aria-pressed="true"] { border-color: #a4864f; color: var(--gold); }
-.upgrade-card.advanced .buy-button { margin-top: auto; }
+.upgrade-card .buy-button { margin-top: auto; }
 .buy-button:disabled .price { color: #a79772; }
 .armory-note { grid-column: 1 / -1; display: flex; flex-direction: column; justify-content: center; gap: 12px; border: 1px dashed #314652; border-radius: 9px; padding: 20px; color: #819dab; font-size: 12px; line-height: 1.7; }
 .armory-note strong { color: var(--gold); font-size: 13px; }
@@ -168,6 +166,10 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
   .boss-hud { top: 82px; padding: 8px 12px; }
   .sector-label { font-size: 7px; bottom: 12px; right: 12px; letter-spacing: 1px; }
   .footer { flex-wrap: wrap; }
+}
+@media (max-width: 760px) {
+  .upgrade-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .upgrade-card.advanced-start { grid-column: 1; }
 }
 @media (max-width: 600px) {
   .game { width: calc(100% - 20px); padding-top: 14px; }
@@ -218,14 +220,9 @@ h2 { margin: 14px 0; font-size: 40px; line-height: 1.13; letter-spacing: -1.4px;
   .shop-wallet .label { font-size: 7px; }
   .shop-wallet strong { font-size: 24px; }
   .shop-panel .intro { font-size: 12px; }
-  .upgrade-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-  .upgrade-card, .upgrade-card.advanced { grid-column: span 1; }
-  .upgrade-card.advanced-start { grid-column: 1; }
-  .upgrade-card { padding: 13px; }
+  .upgrade-grid { gap: 9px; }
   .upgrade-card h3 { font-size: 13px; }
   .upgrade-level { font-size: 8px; }
-  .upgrade-symbol { width: 26px; height: 26px; }
-  .upgrade-values { font-size: 14px; }
   .buy-button { padding: 9px 7px; font-size: 10px; }
   .run-summary { padding: 12px; gap: 9px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .run-summary .label { font-size: 8px; }
