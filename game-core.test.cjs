@@ -1231,7 +1231,7 @@ test("the soldier has exactly two gun poses which rotate and move with its body"
   }
 });
 
-test("each gun independently chooses its closest living enemy rather than the soldier's closest", () => {
+test("each gun keeps its closest living enemy when the preferred targets already differ", () => {
   const game = startedGame();
   game.player.angle = 0;
   const upper = enemyAt(game, game.player.x + 140, game.player.y - 35, 1000);
@@ -1254,6 +1254,104 @@ test("each gun independently chooses its closest living enemy rather than the so
   assert.equal(lower.hp, 982);
   game.killEnemy(upper);
   assert.deepEqual(game.getGunPoses().map(gun => gun.target), [lower, lower]);
+});
+
+test("guns split a shared preferred target, giving the alternate to the closer gun at either bullet tier", () => {
+  for (const level of [0, 1]) {
+    for (const side of [-1, 1]) {
+      for (const explicit of [false, true]) {
+        const profile = Core.createProfile();
+        profile.levels.bullets = level;
+        const game = startedGame(profile);
+        game.player.angle = 0;
+        const near = enemyAt(game, game.player.x + 80, game.player.y, 1000);
+        const alternate = enemyAt(game, game.player.x + 140, game.player.y + side * 50, 1000);
+        game.enemies = [alternate, near];
+        const guns = game.getGunPoses();
+        assert.ok(guns.every(gun => game.closestEnemy(gun) === near));
+        assert.deepEqual(guns.map(gun => gun.target), side < 0 ? [alternate, near] : [near, alternate]);
+        if (explicit) game.shoot(near);
+        else game.update(1 / 60);
+        assert.equal(game.bullets.length, (level + 1) * 2);
+        for (const bullet of game.bullets) {
+          assert.ok(Math.abs(Math.atan2(bullet.vy, bullet.vx) - guns[bullet.gunIndex].angle) < 1e-9);
+        }
+        game.fireTimer = 100;
+        game.update(0.1);
+        assert.equal(near.hp, 1000 - game.stats.damage * (level + 1));
+        assert.equal(alternate.hp, 1000 - game.stats.damage * (level + 1));
+        assert.equal(game.bulletsFired, (level + 1) * 2);
+        assert.equal(game.drainEvents().filter(event => event.type === "shot").length, 1);
+      }
+    }
+  }
+});
+
+test("distinct gun targeting retargets after deaths and only shares the final available enemy", () => {
+  const game = startedGame();
+  game.player.angle = 0;
+  const near = enemyAt(game, game.player.x + 80, game.player.y);
+  const alternate = enemyAt(game, game.player.x + 140, game.player.y + 50);
+  const third = enemyAt(game, game.player.x - 280, game.player.y);
+  game.enemies = [near, alternate, third];
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [near, alternate]);
+  game.killEnemy(near);
+  assert.deepEqual(new Set(game.getGunPoses().map(gun => gun.target)), new Set([alternate, third]));
+  game.killEnemy(alternate);
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [third, third]);
+  game.killEnemy(third);
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [null, null]);
+  game.shoot();
+  assert.equal(game.bulletsFired, 0);
+});
+
+test("sharing a sole in-range target ignores dead enemies, queued spawns, and out-of-range enemies", () => {
+  const game = startedGame();
+  game.player.angle = 0;
+  game.spawnRemaining = 20;
+  const near = enemyAt(game, game.player.x + 80, game.player.y);
+  const other = enemyAt(game, game.player.x + game.stats.range + 1, game.player.y);
+  const dead = enemyAt(game, game.player.x + 4, game.player.y - 16, 0);
+  game.enemies = [dead, other, near];
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [near, near]);
+  other.x -= 1;
+  assert.deepEqual(new Set(game.getGunPoses().map(gun => gun.target)), new Set([near, other]));
+  other.x += 1;
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [near, near]);
+  near.hp = 0;
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [null, null]);
+});
+
+test("two-target assignments minimize combined gun-to-enemy distance across torso angles and swarms", () => {
+  for (const offsets of [
+    [[80, 0], [140, 50], [-280, 0]],
+    [[150, -55], [150, 55], [-210, -90]],
+    [[10, -50], [-30, 90], [210, 60], [280, -180]],
+  ]) {
+    const game = startedGame();
+    const eligible = offsets.map(([x, y]) => enemyAt(game, game.player.x + x, game.player.y + y));
+    game.enemies = [
+      enemyAt(game, game.player.x, game.player.y, 0),
+      enemyAt(game, game.player.x + game.stats.range + 1, game.player.y),
+      ...eligible,
+    ];
+    for (let i = 0; i < 8; i += 1) {
+      game.player.angle = i * Math.PI / 4;
+      const [first, second] = game.getGunPoses();
+      assert.notEqual(first.target, second.target);
+      assert.ok(eligible.includes(first.target) && eligible.includes(second.target));
+      const distance = (gun, enemy) => Math.hypot(enemy.x - gun.x, enemy.y - gun.y);
+      const actual = distance(first, first.target) + distance(second, second.target);
+      let minimum = Infinity;
+      for (const left of eligible) {
+        for (const right of eligible) {
+          if (left !== right) minimum = Math.min(minimum, distance(first, left) + distance(second, right));
+        }
+      }
+      assert.ok(Math.abs(actual - minimum) < 1e-9);
+      assert.deepEqual(game.getGunPoses().map(gun => gun.target), [first.target, second.target]);
+    }
+  }
 });
 
 test("automatic fire sends each gun's own bullets toward a different nearest target", () => {
@@ -1370,7 +1468,7 @@ test("both guns retain accurate range limits at maximum weapon-range and bullet 
   }
 });
 
-test("auto-fire chooses the nearest living alien when both guns prefer it", () => {
+test("auto-fire splits between two living aliens even when both guns prefer the nearer one", () => {
   const game = startedGame();
   const far = enemyAt(game, game.player.x - 200, game.player.y);
   const near = enemyAt(game, game.player.x + 100, game.player.y);
@@ -1379,8 +1477,9 @@ test("auto-fire chooses the nearest living alien when both guns prefer it", () =
   assert.equal(game.closestEnemy(), near);
   game.update(1 / 60);
   assert.equal(game.bullets.length, 2);
-  assert.ok(game.bullets.every(bullet => bullet.vx > 0));
-  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [near, near]);
+  assert.ok(game.bullets.some(bullet => bullet.vx > 0));
+  assert.ok(game.bullets.some(bullet => bullet.vx < 0));
+  assert.deepEqual(game.getGunPoses().map(gun => gun.target), [near, far]);
 });
 
 test("auto-fire ignores enemies outside range and includes the exact range boundary", () => {

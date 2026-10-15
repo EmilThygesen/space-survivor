@@ -287,12 +287,12 @@
       if (isBoss || finalBoss) this.events.push({ type: "boss", finalBoss });
     }
 
-    closestEnemy(origin = this.player) {
+    closestEnemy(origin = this.player, excluded = null) {
       let nearest = null;
       let distance = Infinity;
       const maxDistance = this.stats.range ** 2;
       for (const enemy of this.enemies) {
-        if (enemy.hp <= 0) continue;
+        if (enemy.hp <= 0 || enemy === excluded) continue;
         const inRange = (enemy.x - this.player.x) ** 2 + (enemy.y - this.player.y) ** 2 <= maxDistance;
         const squared = (enemy.x - origin.x) ** 2 + (enemy.y - origin.y) ** 2;
         if (inRange && squared < distance) {
@@ -308,20 +308,37 @@
       const dx = Math.cos(p.angle);
       const dy = Math.sin(p.angle);
       const active = this.stats && (this.phase === "running" || this.phase === "paused");
-      return [-1, 1].map((side, index) => {
+      const guns = [-1, 1].map((side, index) => {
         const x = p.x + dx * 4 - dy * side * 16;
         const y = p.y + dy * 4 + dx * side * 16;
         const target = active ? this.closestEnemy({ x, y }) : null;
-        const angle = target ? Math.atan2(target.y - y, target.x - x) : p.angle;
-        return { index, x, y, angle, target, muzzleFlash: p.muzzleFlash };
+        return { index, x, y, angle: p.angle, target, muzzleFlash: p.muzzleFlash };
       });
+      const [first, second] = guns;
+      if (first.target && first.target === second.target) {
+        const firstAlternative = this.closestEnemy(first, first.target);
+        const secondAlternative = this.closestEnemy(second, second.target);
+        if (firstAlternative && secondAlternative) {
+          // Split a shared nearest target using the smaller extra aiming distance.
+          const firstDetour = Math.hypot(firstAlternative.x - first.x, firstAlternative.y - first.y)
+            - Math.hypot(first.target.x - first.x, first.target.y - first.y);
+          const secondDetour = Math.hypot(secondAlternative.x - second.x, secondAlternative.y - second.y)
+            - Math.hypot(second.target.x - second.x, second.target.y - second.y);
+          if (firstDetour < secondDetour) first.target = firstAlternative;
+          else second.target = secondAlternative;
+        }
+      }
+      for (const gun of guns) {
+        if (gun.target) gun.angle = Math.atan2(gun.target.y - gun.y, gun.target.x - gun.x);
+      }
+      return guns;
     }
 
     shoot(target = null) {
       if (target) this.player.angle = Math.atan2(target.y - this.player.y, target.x - this.player.x);
       let fired = false;
       for (const gun of this.getGunPoses()) {
-        const aim = target || gun.target;
+        const aim = gun.target || target;
         if (!aim) continue;
         const angle = Math.atan2(aim.y - gun.y, aim.x - gun.x);
         const offset = Math.min(29, Math.hypot(aim.x - gun.x, aim.y - gun.y));
